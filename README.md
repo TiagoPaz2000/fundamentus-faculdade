@@ -1,6 +1,6 @@
 # Carteira da Turma
 
-App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os **membros** veem os mesmos dados; só administradores compram, vendem, editam, mexem no caixa e gerenciam membros.
+App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os **membros** veem os mesmos dados e cada um compra até 2 papéis; só administradores vendem, editam, mexem no caixa e gerenciam membros.
 
 > **Projeto Supabase compartilhado.** Este app usa o mesmo projeto Supabase de outro app (blender-ai). O login (`auth.users`) é comum aos dois, então ter conta não dá acesso à carteira: só entra quem é **membro** (tem linha em `public.profiles`). As tabelas da carteira (`profiles`, `positions`, `cash_movements`, `quotes`, `scheduled_orders`) não colidem com as do outro app (`perfis`, `pontes`, `fila`…). Os templates de e-mail e as configurações de Auth também são compartilhados: este app **não envia e-mails** e não depende deles.
 
@@ -16,23 +16,21 @@ App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os
 | --- | --- |
 | `/login` | Login com e-mail e senha. Não existe cadastro. |
 | `/sem-acesso` | Aparece para quem está logado mas não é membro (ex.: conta do outro app): mostra o e-mail e o botão de sair. |
-| `/` | Cards (caixa, investido, valor de mercado, resultado, papéis na carteira X/10), formulário de compra (admin), tabela com filtro abertas/fechadas/todas, prints e ações de admin. |
+| `/` | Cards (caixa, investido, valor de mercado, resultado, papéis na carteira X/10), formulário de compra (todo membro), tabela com filtro abertas/fechadas/todas, prints e ações de admin. |
 | `/papel/[ticker]` | Candles do InfoMoney com volume, linhas tracejadas nos preços de compra/venda, marcadores nas datas, indicadores do Fundamentus e as posições com os prints em miniatura. |
 | `/caixa` | Movimentações com saldo acumulado. O admin lança aporte, retirada e ajuste, e exclui lançamentos manuais. |
 | `/usuarios` | (admin) Membros: adicionar por e-mail, gerar link de convite/senha, remover, promover/rebaixar admin. O último admin não pode ser removido nem rebaixado. |
 | `/definir-senha` | Definir senha depois de aceitar o convite. |
 | `/api/export` | Baixa a planilha (abas "Carteira" e "Caixa"; links dos prints valem 7 dias). Exige ser membro. |
 | `/api/cron/scrape` | Cron diário que atualiza as cotações dos papéis em aberto. Exige `Authorization: Bearer CRON_SECRET`. |
-| `/api/cron/orders` | Executa as compras agendadas cujo preço foi atingido (3x por dia útil, dentro do pregão). Exige `Authorization: Bearer CRON_SECRET`. |
 | `/auth/confirm` | Destino dos links de convite e de recuperação de senha. |
 
 ### Regras principais
 
-- **Carteira de 10 papéis × 100 ações**: são escolhidos até 10 papéis, e cada compra é automaticamente de **100 ações** daquele papel. A quantidade não é digitada nem editada. Cada papel tem no máximo uma posição aberta: depois de fechar, ele pode voltar. Papéis com compra agendada ocupam vaga. O formulário mostra as vagas livres e o banco também barra (trigger `enforce_portfolio_limit`, redefinido na migration `0003`); o erro é traduzido para uma mensagem amigável.
+- **Carteira de 10 papéis × 100 ações**: são escolhidos até 10 papéis, e cada compra é automaticamente de **100 ações** daquele papel. A quantidade não é digitada nem editada. Cada papel tem no máximo uma posição aberta: depois de fechar, ele pode voltar. Cada membro tem no máximo **2 posições abertas** (vender libera a vaga). O formulário mostra as vagas livres e o banco também barra (trigger `enforce_portfolio_limit`, redefinido na migration `0003`); o erro é traduzido para uma mensagem amigável.
 - **Caixa**: o saldo é a view `cash_balance`. Compras debitam e vendas creditam automaticamente (trigger `sync_position_cash`). Uma compra que deixa o saldo negativo é permitida, com aviso.
-- **Horário do pregão**: a compra imediata só é aceita de segunda a sexta, das 10:00 às 17:00 (Brasília). A data da compra é sempre a de hoje. O servidor recusa fora desse horário, mesmo que alguém chame a action direto. O horário pode ser ajustado com as envs `MARKET_OPEN` e `MARKET_CLOSE` (`HH:MM`), porque a B3 muda o horário em alguns períodos do ano.
-- **Compra agendada (preço-limite)**: fora do pregão, ou se preferir, o admin informa ticker, quantidade, **preço desejado** e, opcionalmente, a validade, e agenda. Dentro do pregão, o cron `/api/cron/orders` (ou o botão **Verificar agora**) busca a cotação; se ela estiver **no preço desejado ou abaixo** e for **de hoje**, a compra é registrada pela cotação do momento, com print e histórico como numa compra normal. Se estiver acima, a ordem continua aguardando. Ordens vencidas viram "Vencida". Um papel agendado ocupa uma das 10 vagas, e a ordem também é de 100 ações. O admin pode cancelar ordens pendentes.
-- **Tela de compra** (pensada para celular): digite o papel ou o nome da empresa no campo de busca (lista de ~1000 papéis do Fundamentus, em cache por 1 dia via `/api/tickers`) e escolha. Aparecem as **100 ações**, o **valor atual** e o total. Ao clicar em **Comprar**, o servidor busca a cotação de novo naquele instante e registra a compra por ela (o preço não é digitado), depois tira o print. Papéis sem negociação recente (cotação com mais de 7 dias) não podem ser comprados nem agendados.
+- **Compra a qualquer hora (dentro ou fora do pregão)**: não existe agendamento nem bloqueio de horário. O preço é sempre a cotação buscada no servidor **no momento do clique** (Fundamentus, com fallback para o InfoMoney). Dentro do pregão (segunda a sexta, 10:00–17:00 de Brasília) é a cotação atual; **fora do pregão** (noite, madrugada, fim de semana, antes da abertura) os sites já mostram o **último fechamento**, então a compra sai pelo valor de fechamento do último pregão. A data da compra é sempre a de hoje. O horário do pregão serve só para a interface (rótulo "Pregão aberto/fechado" e "cotação atual" × "fechamento de dd/mm") e pode ser ajustado com as envs `MARKET_OPEN` e `MARKET_CLOSE` (`HH:MM`), porque a B3 muda o horário em alguns períodos do ano.
+- **Tela de compra** (pensada para celular): digite o papel ou o nome da empresa no campo de busca (lista de ~1000 papéis do Fundamentus, em cache por 1 dia via `/api/tickers`) e escolha. Aparecem as **100 ações**, o preço que será usado (**cotação atual** ou **fechamento de dd/mm**, pela data da cotação) e o total. Ao clicar em **Comprar**, o servidor busca a cotação de novo naquele instante e registra a compra por ela (o preço não é digitado), depois tira o print. Papéis sem negociação recente (cotação com mais de 7 dias) não podem ser comprados.
 - **Compra**: insere a posição e depois, em paralelo, (b) tira o print do Fundamentus e sobe para `screenshots/<TICKER>/<id>-buy-<timestamp>.png`, (c) importa o histórico do InfoMoney desde a data da compra menos 180 dias e (d) grava a cotação atual das duas fontes. Se b, c ou d falharem, a compra continua valendo e o erro aparece na tela; em **Gerenciar** há "Tirar print novamente" e "Reimportar histórico".
 - **Fechar posição**: busca a cotação atual (Fundamentus, com fallback para o InfoMoney) para pré-preencher o preço, grava a venda e tira o print `-sell-`.
 - **Membros**: páginas, Server Actions, `/api/export` e `/api/tickers` exigem que o usuário logado tenha perfil em `profiles`; o RLS (migration `0004`) também só deixa membros lerem os dados. Os crons usam service role e não dependem de login.
@@ -45,10 +43,10 @@ App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os
 1. Use o projeto Supabase **já existente** do blender-ai (ou crie um novo em <https://supabase.com>).
 2. No **SQL Editor**, rode as migrations em ordem: `0001_init.sql`, `0002_scheduled_orders.sql`, `0003_ten_tickers.sql`, `0004_membros.sql` e `0005_compras_por_usuario.sql` (pasta `supabase/migrations`).
    - `0001`: tabelas, views, triggers, RLS e o bucket privado `screenshots`.
-   - `0002`: compras agendadas.
+   - `0002`: tabela `scheduled_orders` (compras agendadas). O app não usa mais agendamento; a tabela fica no banco sem uso.
    - `0003`: regra de 10 papéis × 100 ações.
    - `0004`: modelo de membros para coexistir com o outro app. Remove o trigger que criava perfil para **todo** usuário novo, cria `is_member()`, faz as policies de leitura (tabelas e prints) exigirem membro e impede apagar o último admin. Só o admin inicial (`tiagopaz.dev@gmail.com`) ganha perfil automaticamente. Na primeira execução, apaga os perfis que a `0001` criou para usuários do outro app (reexecutar não apaga membros novos); falha sem apagar nada se o admin inicial não existir em `auth.users`.
-   - `0005`: cada membro compra/agenda os próprios papéis, no máximo **2 abertos ou agendados por usuário** (vender libera a vaga). Cria `profiles.name` (parte do email antes do @). Compra e cancelamento de membros passam pelo servidor (service role); pelo RLS só admin escreve em `positions`.
+   - `0005`: cada membro compra os próprios papéis, no máximo **2 abertos por usuário** (vender libera a vaga). O trigger ainda soma ordens `pending` de `scheduled_orders`, que fica vazia e conta zero. Cria `profiles.name` (parte do email antes do @). A compra de membros passa pelo servidor (service role); pelo RLS só admin escreve em `positions`.
 3. **Não** desligue o cadastro público nem edite os templates de e-mail: essas configurações são do projeto inteiro e o outro app depende delas. A carteira não precisa disso, porque o acesso é controlado pela lista de membros.
 4. Em **Authentication → URL Configuration**, adicione a URL da carteira (Vercel e `http://localhost:3000`) em **Redirect URLs**. Não troque o **Site URL** se ele for do outro app.
 
@@ -106,9 +104,8 @@ npx tsx --conditions=react-server scripts/test-screenshot.ts PETR4 ./tmp
 1. Importe o repositório na Vercel (framework Next.js).
 2. Em **Settings → Environment Variables**, cadastre `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET`. **Não** defina `CHROME_EXECUTABLE_PATH` na Vercel: lá o app usa `@sparticuz/chromium`.
 3. Use **Node.js 22 ou superior** (Settings → General → Node.js Version), exigido pelo `@sparticuz/chromium` 153.
-4. Faça o deploy. O `vercel.json` registra os crons (horários em UTC; Brasília = UTC−3):
+4. Faça o deploy. O `vercel.json` registra o cron (horário em UTC; Brasília = UTC−3):
    - `/api/cron/scrape`: `30 21 * * 1-5`, 18h30 de Brasília em dias úteis.
-   - `/api/cron/orders`: `30 13`, `0 16` e `15 19` em dias úteis, ou seja, cerca de 10h30, 13h00 e 16h15 de Brasília, dentro do pregão.
 
     A Vercel envia `Authorization: Bearer <CRON_SECRET>` automaticamente quando a variável `CRON_SECRET` existe.
 5. Atualize o **Site URL** do Supabase para a URL de produção.
@@ -128,13 +125,6 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/s
 ```
 
 A resposta é um JSON com `ok`, `tickers`, `saved` e `results[TICKER][fundamentus|infomoney]` (`ok` com o preço, ou o `error`). Sem o header, a rota responde 401.
-
-Compras agendadas (fora do pregão responde `ran: false` com o motivo):
-
-```bash
-curl -i -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/orders
-```
-
 ## Estrutura
 
 ```
@@ -149,17 +139,16 @@ lib/database.types.ts         tipos das tabelas (escritos à mão a partir do SQ
 lib/portfolio.ts              carga e cálculos da carteira
 lib/quotes.ts                 upsert de cotações, histórico e upload de prints
 lib/screenshot.ts             Puppeteer (server-only)
-lib/market-hours.ts           horário do pregão
-lib/scheduled-orders.ts       execução das compras agendadas
+lib/market-hours.ts           horário do pregão (só para os rótulos da compra)
 lib/scrapers/*                scrapers do Fundamentus e do InfoMoney
 supabase/migrations/0001_init.sql … 0005_compras_por_usuario.sql
 ```
 
 ## Limitações
 
-- **Plano Hobby da Vercel**: cada cron roda no máximo 1 vez por dia (por isso as ordens usam 3 entradas separadas no `vercel.json`), e a Vercel pode disparar em qualquer momento dentro da hora agendada. Para cotações intradiárias seria preciso o plano Pro ou um agendador externo chamando a rota com o `CRON_SECRET`.
-- **Compras agendadas no plano Hobby**: cada cron dispara em algum momento dentro da hora agendada, então a verificação não é em tempo real. Se o preço tocar o limite e voltar entre duas verificações, a ordem não executa. Use **Verificar agora** para checar na hora. A cotação do Fundamentus tem atraso, e a compra é registrada por essa cotação, não por um preço de corretora.
-- **Feriados da B3** não estão no calendário. Nesses dias, a execução agendada não compra porque exige uma cotação com a data de hoje; já a compra imediata não é bloqueada em feriado.
+- **Plano Hobby da Vercel**: cada cron roda no máximo 1 vez por dia, e a Vercel pode disparar em qualquer momento dentro da hora agendada. Para cotações intradiárias seria preciso o plano Pro ou um agendador externo chamando a rota com o `CRON_SECRET`.
+- **Feriados da B3** não estão no calendário. Num feriado em dia útil a compra continua liberada e sai pela cotação que os sites mostram (o fechamento do último pregão); como a data da cotação não é de hoje, a tela mostra "fechamento de dd/mm" mesmo dentro do horário do pregão.
+- A cotação do Fundamentus tem atraso, e a compra é registrada por essa cotação, não por um preço de corretora. Fora do pregão a data da compra (hoje) e a data da cotação (último pregão) são diferentes.
 - **O print registra o momento do cadastro**, não a data de compra informada. Se você lança hoje uma compra feita semana passada, o print mostra a página do Fundamentus de hoje. O mesmo vale para "Tirar print novamente".
 - Fundamentus e InfoMoney publicam cotações com atraso e podem mudar o HTML ou a API sem aviso. Nesse caso os scrapers falham e o app mostra o erro; a compra ou venda continua sendo registrada.
 - A "cotação atual" é a cotação mais recente gravada no banco (atualizada pelo cron, por uma compra ou por "buscar cotação"). Se as duas fontes têm cotação do mesmo dia, vale a do InfoMoney.

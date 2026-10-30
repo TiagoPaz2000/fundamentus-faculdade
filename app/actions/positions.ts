@@ -9,7 +9,7 @@ import { SHARES_PER_TICKER, errorMessage, friendlyDbError } from "@/lib/errors";
 import { formatBRL, formatDate } from "@/lib/format";
 import { checkTickerSlot, getCashBalance } from "@/lib/portfolio";
 import { HISTORY_DAYS_BEFORE_BUY, runBuyFollowups } from "@/lib/buy-followup";
-import { marketStatus } from "@/lib/market-hours";
+import { marketStatus, priceBasisLabel } from "@/lib/market-hours";
 import {
   captureFundamentusScreenshot,
   fetchCurrentQuote,
@@ -49,11 +49,15 @@ export type QuoteLookup = {
   note?: string;
   /** Cotação velha demais (papel sem negociação recente): não pode ser comprado. */
   stale: boolean;
+  /** Pregão aberto agora (no servidor, no momento da consulta). */
+  marketOpen: boolean;
+  /** Preço que a compra vai usar: "cotação atual" ou "fechamento de dd/mm". */
+  priceBasis: string;
 };
 
 export async function lookupQuote(tickerInput: string): Promise<ActionResult<QuoteLookup>> {
   try {
-    await requireUser(); // qualquer membro consulta para comprar/agendar
+    await requireUser(); // qualquer membro consulta para comprar
     const ticker = normalizeTicker(tickerInput);
     if (!ticker) return fail("Ticker inválido.");
     let current: Awaited<ReturnType<typeof fetchCurrentQuote>>;
@@ -66,6 +70,8 @@ export async function lookupQuote(tickerInput: string): Promise<ActionResult<Quo
     const { quote, fallbackFrom } = current;
     // Aproveita para gravar a cotação (não bloqueia em caso de erro).
     await upsertQuotes([quote]).catch((e) => console.error("upsert cotação:", e));
+    const today = todaySP();
+    const marketOpen = marketStatus().open;
     return {
       ok: true,
       data: {
@@ -75,7 +81,9 @@ export async function lookupQuote(tickerInput: string): Promise<ActionResult<Quo
         source: quote.source,
         changePct: quote.changePct,
         note: fallbackFrom ? "Fundamentus indisponível; cotação do InfoMoney." : undefined,
-        stale: daysBetween(quote.quoteDate, todaySP()) > MAX_QUOTE_AGE_DAYS,
+        stale: daysBetween(quote.quoteDate, today) > MAX_QUOTE_AGE_DAYS,
+        marketOpen,
+        priceBasis: priceBasisLabel(quote.quoteDate, today, marketOpen),
       },
     };
   } catch (err) {
@@ -88,10 +96,11 @@ export async function lookupQuote(tickerInput: string): Promise<ActionResult<Quo
 // ---------------------------------------------------------------------------
 
 /**
- * Compra imediata: só no horário do pregão, data sempre hoje, quantidade sempre
- * SHARES_PER_TICKER (100) e preço = cotação atual buscada AGORA no servidor
- * (Fundamentus, com fallback InfoMoney). A carteira tem no máximo 10 papéis e
- * cada membro no máximo MAX_PER_USER (2) papéis abertos ou agendados.
+ * Compra: aceita a qualquer hora e em qualquer dia. Data sempre hoje, quantidade
+ * sempre SHARES_PER_TICKER (100) e preço = cotação buscada AGORA no servidor
+ * (Fundamentus, com fallback InfoMoney). Fora do pregão essa cotação já é a do
+ * último fechamento (a data vem do próprio site). A carteira tem no máximo 10
+ * papéis e cada membro no máximo MAX_PER_USER (2) papéis abertos.
  * Qualquer membro compra, sempre em nome próprio (created_by = usuário logado).
  */
 export type BuyInput = { ticker: string };
@@ -101,10 +110,6 @@ export async function buyPosition(
 ): Promise<ActionResult<{ id: string; price: number; source: "fundamentus" | "infomoney" }>> {
   try {
     const user = await requireUser();
-    const market = marketStatus();
-    if (!market.open) {
-      return fail(`${market.label}. Use "Agendar compra" para definir o preço e comprar no próximo pregão.`);
-    }
     const ticker = normalizeTicker(input?.ticker);
     if (!ticker) return fail("Ticker inválido (use, por exemplo, PETR4).");
     const quantity = SHARES_PER_TICKER;
@@ -115,9 +120,11 @@ export async function buyPosition(
     const slotError = await checkTickerSlot(supabase, ticker, { userId: user.id });
     if (slotError) return fail(slotError);
 
-    // Preço da compra = cotação atual, buscada no momento do clique.
+    // Preço da compra = cotação buscada no momento do clique (fora do pregão,
+    // é o último fechamento).
     let price: number;
     let source: "fundamentus" | "infomoney";
+    let basis: string;
     try {
       const { quote } = await fetchCurrentQuote(ticker);
       if (!validPrice(quote.price)) return fail(`Cotação inválida para ${ticker}.`);
@@ -126,6 +133,7 @@ export async function buyPosition(
       }
       price = quote.price;
       source = quote.source;
+      basis = priceBasisLabel(quote.quoteDate, buyDate, marketStatus().open);
       await upsertQuotes([quote]).catch((e) => console.error("upsert cotação:", e));
     } catch (e) {
       return fail(`Não foi possível obter a cotação atual de ${ticker}: ${errorMessage(e)}`);
@@ -164,7 +172,7 @@ export async function buyPosition(
     return {
       ok: true,
       data: { id, price, source },
-      message: `Compradas ${quantity} ações de ${ticker} a ${formatBRL(price)} (total ${formatBRL(price * quantity)}).`,
+      message: `Compradas ${quantity} ações de ${ticker} a ${formatBRL(price)}, ${basis} (total ${formatBRL(price * quantity)}).`,
       warnings,
     };
   } catch (err) {

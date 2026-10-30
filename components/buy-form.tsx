@@ -1,70 +1,64 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { scheduleOrder } from "@/app/actions/orders";
 import { buyPosition, lookupQuote, type QuoteLookup } from "@/app/actions/positions";
 import { MAX_PER_USER, SHARES_PER_TICKER, USER_LIMIT_MESSAGE } from "@/lib/errors";
-import { formatBRL, formatDate, formatPct, parseDecimal, signClass } from "@/lib/format";
+import { formatBRL, formatDate, formatPct, signClass } from "@/lib/format";
 import { FeedbackBox, type Feedback } from "./modal";
 import { TickerCombobox } from "./ticker-combobox";
 
-type Mode = "buy" | "schedule";
-
 /**
- * Compra: escolhe o papel na lista → aparece a cotação atual e as 100 ações →
- * "Comprar" registra pela cotação do momento e tira o print do Fundamentus.
- * Fora do pregão: agenda com o preço desejado.
- * Qualquer membro usa; a compra/agendamento é sempre em nome do usuário logado.
- * Limites: carteira com maxTickers papéis e cada membro com maxPerUser
- * (posições abertas + agendamentos pendentes dele). O servidor valida de novo.
+ * Compra: escolhe o papel na lista → aparece a cotação e as 100 ações →
+ * "Comprar" registra pela cotação buscada no momento do clique e tira o print do
+ * Fundamentus. A compra é aceita a qualquer hora: fora do pregão a cotação é a do
+ * último fechamento (o formulário mostra "fechamento de dd/mm").
+ * Qualquer membro usa; a compra é sempre em nome do usuário logado.
+ * Limites: carteira com maxTickers papéis e cada membro com maxPerUser posições
+ * abertas. O servidor valida de novo.
  */
 export function BuyForm({
   slotsAvailable,
   maxTickers,
   takenTickers,
   cashBalance,
-  today,
   marketOpen,
   marketLabel,
   userSlotsUsed = 0,
   maxPerUser = MAX_PER_USER,
 }: {
-  /** Vagas de papel livres: MAX_TICKERS − abertos − agendados */
+  /** Vagas de papel livres: MAX_TICKERS − papéis abertos */
   slotsAvailable: number;
   maxTickers: number;
-  /** Papéis já abertos ou com compra agendada (não podem ser escolhidos). */
+  /** Papéis já abertos (não podem ser escolhidos). */
   takenTickers: string[];
   cashBalance: number;
-  today: string;
   marketOpen: boolean;
   marketLabel: string;
-  /** Papéis do usuário logado: posições abertas dele + agendamentos pendentes dele. */
+  /** Papéis do usuário logado: posições abertas dele. */
   userSlotsUsed?: number;
   maxPerUser?: number;
 }) {
-  const [mode, setMode] = useState<Mode>(marketOpen ? "buy" : "schedule");
   const [ticker, setTicker] = useState("");
   const [quote, setQuote] = useState<QuoteLookup | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [limitPrice, setLimitPrice] = useState("");
-  const [validUntil, setValidUntil] = useState("");
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [looking, startLookup] = useTransition();
   const [saving, startSave] = useTransition();
 
-  const isBuy = marketOpen && mode === "buy";
   const used = maxTickers - Math.max(0, slotsAvailable);
   const portfolioFull = slotsAvailable <= 0;
   const userFull = userSlotsUsed >= maxPerUser;
   const blockedReason = userFull
     ? USER_LIMIT_MESSAGE
     : portfolioFull
-      ? `A carteira já tem ${maxTickers} papéis (abertos + agendados). Espere uma venda ou o cancelamento de um agendamento para escolher outro.`
+      ? `A carteira já tem ${maxTickers} papéis abertos. Espere uma venda para escolher outro.`
       : null;
 
-  const unitPrice = isBuy ? (quote?.price ?? null) : parseDecimal(limitPrice);
-  const total = unitPrice !== null && Number.isFinite(unitPrice) ? unitPrice * SHARES_PER_TICKER : null;
+  const total = quote ? quote.price * SHARES_PER_TICKER : null;
   const balanceAfter = total !== null ? cashBalance - total : null;
+  // "cotação atual" ou "fechamento de dd/mm" (calculado no servidor na consulta).
+  const basis = quote?.priceBasis ?? (marketOpen ? "cotação atual" : "último fechamento");
+  const basisTitle = basis.charAt(0).toUpperCase() + basis.slice(1);
 
   function selectTicker(t: string) {
     setTicker(t);
@@ -79,7 +73,6 @@ export function BuyForm({
         return;
       }
       setQuote(res.data!);
-      setLimitPrice(res.data!.price.toFixed(2).replace(".", ","));
     });
   }
 
@@ -87,49 +80,18 @@ export function BuyForm({
     if (!ticker) return;
     setFeedback(null);
     startSave(async () => {
-      if (isBuy) {
-        const res = await buyPosition({ ticker });
-        if (!res.ok) return setFeedback({ kind: "error", text: res.error });
-        setFeedback({ kind: "success", text: res.message ?? "Compra registrada.", extra: res.warnings });
-      } else {
-        const price = parseDecimal(limitPrice);
-        if (!Number.isFinite(price) || price <= 0) return setFeedback({ kind: "error", text: "Informe o preço desejado." });
-        if (validUntil && validUntil < today)
-          return setFeedback({ kind: "error", text: "A validade precisa ser hoje ou uma data futura." });
-        const res = await scheduleOrder({ ticker, limitPrice: price, validUntil: validUntil || null });
-        if (!res.ok) return setFeedback({ kind: "error", text: res.error });
-        setFeedback({ kind: "success", text: res.message ?? "Compra agendada." });
-      }
+      const res = await buyPosition({ ticker });
+      if (!res.ok) return setFeedback({ kind: "error", text: res.error });
+      setFeedback({ kind: "success", text: res.message ?? "Compra registrada.", extra: res.warnings });
       setTicker("");
       setQuote(null);
-      setLimitPrice("");
-      setValidUntil("");
     });
   }
-
-  const tab = (active: boolean) =>
-    `flex-1 rounded-md px-3 py-2.5 text-sm font-medium sm:flex-none sm:py-1.5 ${
-      active
-        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-        : "text-zinc-600 disabled:opacity-40 dark:text-zinc-300"
-    }`;
 
   return (
     <section className="card space-y-4 p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex rounded-lg border border-zinc-200 p-1 dark:border-zinc-700">
-          <button
-            type="button"
-            className={tab(isBuy)}
-            onClick={() => setMode("buy")}
-            disabled={!marketOpen || saving || Boolean(blockedReason)}
-          >
-            Comprar agora
-          </button>
-          <button type="button" className={tab(!isBuy)} onClick={() => setMode("schedule")} disabled={saving || Boolean(blockedReason)}>
-            Agendar compra
-          </button>
-        </div>
+        <h2 className="font-semibold">Comprar</h2>
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
           <span className={userFull ? "text-amber-700 dark:text-amber-400" : undefined}>
             Seus papéis: <strong>{Math.min(userSlotsUsed, maxPerUser)}</strong>/{maxPerUser}
@@ -147,7 +109,9 @@ export function BuyForm({
         <span className={`mt-1 inline-block h-2 w-2 shrink-0 rounded-full ${marketOpen ? "bg-emerald-500" : "bg-amber-500"}`} />
         <span>
           {marketLabel}
-          {!marketOpen ? ". Agende com o preço desejado: a compra é feita no pregão quando a cotação chegar nele." : ""}
+          {marketOpen
+            ? ". A compra usa a cotação atual."
+            : ". Dá para comprar mesmo assim: a compra usa o valor de fechamento do último pregão."}
         </span>
       </p>
 
@@ -172,19 +136,21 @@ export function BuyForm({
                   <div className="text-lg font-semibold">{ticker}</div>
                   <div className="text-xs text-zinc-500">
                     {looking
-                      ? "Buscando cotação atual…"
+                      ? "Buscando cotação…"
                       : quote
                         ? `${quote.source === "fundamentus" ? "Fundamentus" : "InfoMoney"} · ${formatDate(quote.quoteDate)}${quote.note ? ` · ${quote.note}` : ""}`
                         : (quoteError ?? "")}
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-xs text-zinc-500">Valor atual</div>
+                  <div className="text-xs text-zinc-500">{looking ? "Cotação" : basisTitle}</div>
                   <div className="text-2xl font-semibold tabular-nums">
                     {looking ? <span className="animate-pulse text-zinc-400">…</span> : formatBRL(quote?.price)}
                   </div>
                   {quote && !quote.stale && quote.changePct !== null ? (
-                    <div className={`text-sm tabular-nums ${signClass(quote.changePct)}`}>{formatPct(quote.changePct)} hoje</div>
+                    <div className={`text-sm tabular-nums ${signClass(quote.changePct)}`}>
+                      {formatPct(quote.changePct)} {quote.marketOpen ? "hoje" : "no dia"}
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -194,39 +160,11 @@ export function BuyForm({
                   {ticker} não tem negociação recente (última cotação em {formatDate(quote.quoteDate)}). Escolha outro
                   papel.
                 </p>
-              ) : null}
-
-              {!isBuy ? (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="label" htmlFor="limit-price">
-                      Preço desejado (máximo por ação)
-                    </label>
-                    <input
-                      id="limit-price"
-                      className="input"
-                      inputMode="decimal"
-                      placeholder="0,00"
-                      value={limitPrice}
-                      onChange={(e) => setLimitPrice(e.target.value)}
-                      disabled={saving}
-                    />
-                  </div>
-                  <div>
-                    <label className="label" htmlFor="valid-until">
-                      Válida até (opcional)
-                    </label>
-                    <input
-                      id="valid-until"
-                      className="input"
-                      type="date"
-                      min={today}
-                      value={validUntil}
-                      onChange={(e) => setValidUntil(e.target.value)}
-                      disabled={saving}
-                    />
-                  </div>
-                </div>
+              ) : quote ? (
+                <p className="text-xs text-zinc-500">
+                  Preço da compra: <strong>{basis}</strong>
+                  {quote.marketOpen ? " (buscada de novo no momento do clique)" : ""}.
+                </p>
               ) : null}
 
               <dl className="grid grid-cols-3 gap-2 text-center">
@@ -235,7 +173,7 @@ export function BuyForm({
                   <dd className="whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base">{SHARES_PER_TICKER}</dd>
                 </div>
                 <div className="rounded-md bg-zinc-50 p-2 dark:bg-zinc-800/60">
-                  <dt className="text-[11px] uppercase tracking-wide text-zinc-500">{isBuy ? "Total" : "Total máx."}</dt>
+                  <dt className="text-[11px] uppercase tracking-wide text-zinc-500">Total</dt>
                   <dd className="whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base">{formatBRL(total)}</dd>
                 </div>
                 <div className="rounded-md bg-zinc-50 p-2 dark:bg-zinc-800/60">
@@ -256,19 +194,17 @@ export function BuyForm({
                 type="button"
                 className="btn-primary w-full whitespace-normal py-3 text-base"
                 onClick={submit}
-                disabled={saving || looking || (isBuy && !quote) || Boolean(quote?.stale)}
+                disabled={saving || looking || !quote || quote.stale}
               >
                 {saving
-                  ? isBuy
-                    ? "Comprando e tirando o print…"
-                    : "Agendando…"
-                  : isBuy
-                    ? `Comprar ${SHARES_PER_TICKER} ${ticker}${quote ? ` por ${formatBRL(quote.price)}` : ""}`
-                    : `Agendar ${SHARES_PER_TICKER} ${ticker}`}
+                  ? "Comprando e tirando o print…"
+                  : `Comprar ${SHARES_PER_TICKER} ${ticker}${quote ? ` por ${formatBRL(quote.price)}` : ""}`}
               </button>
-              {saving && isBuy ? (
+              {saving ? (
                 <p className="text-center text-xs text-zinc-500">
-                  O preço final é a cotação no momento da compra. O print do Fundamentus pode levar até 1 minuto.
+                  O preço final é a cotação buscada no momento da compra
+                  {quote && !quote.marketOpen ? " (fora do pregão, o último fechamento)" : ""}. O print do Fundamentus
+                  pode levar até 1 minuto.
                 </p>
               ) : null}
             </div>

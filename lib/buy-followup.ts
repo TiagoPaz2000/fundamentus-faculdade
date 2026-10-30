@@ -11,7 +11,7 @@ export const HISTORY_DAYS_BEFORE_BUY = 180;
  * Passos depois de inserir uma compra: (b) print do Fundamentus, (c) histórico do
  * InfoMoney e (d) cotação atual das duas fontes. Nunca lança: devolve avisos.
  * `client` precisa poder atualizar positions: o RLS só libera UPDATE para admin,
- * então compras de membros (e ordens agendadas) passam o client de service role.
+ * então compras de membros passam o client de service role.
  */
 export async function runBuyFollowups(
   client: SupabaseClient<Database>,

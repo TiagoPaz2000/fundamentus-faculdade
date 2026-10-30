@@ -5,12 +5,10 @@ import { PositionsTable } from "@/components/positions-table";
 import { SummaryCards } from "@/components/summary-cards";
 import { requireUser } from "@/lib/auth";
 import { todaySP } from "@/lib/dates";
-import { Alert } from "@/components/modal";
-import { ScheduledOrders } from "@/components/scheduled-orders";
 import { marketStatus } from "@/lib/market-hours";
 import { MemberScoreboard } from "@/components/member-scoreboard";
 import { MAX_PER_USER } from "@/lib/errors";
-import { countBuySlots, loadPortfolio, loadScheduledOrders, type PortfolioData } from "@/lib/portfolio";
+import { countBuySlots, loadPortfolio, type PortfolioData } from "@/lib/portfolio";
 import { loadAdminIds, loadMemberNames, type MemberNames } from "@/lib/member-names";
 import { createClient } from "@/lib/supabase/server";
 
@@ -40,13 +38,11 @@ async function Dashboard() {
   const user = await requireUser();
   const supabase = await createClient();
   let data: PortfolioData;
-  let orders: Awaited<ReturnType<typeof loadScheduledOrders>>;
   let names: MemberNames;
   let adminIds: string[];
   try {
-    [data, orders, names, adminIds] = await Promise.all([
+    [data, names, adminIds] = await Promise.all([
       loadPortfolio(supabase),
-      loadScheduledOrders(supabase),
       loadMemberNames(supabase),
       loadAdminIds(supabase),
     ]);
@@ -57,12 +53,8 @@ async function Dashboard() {
   const market = marketStatus();
   const { summary, positions } = data;
   const memberNames: Record<string, string> = names;
-  const openTickers = positions.filter((p) => p.status === "open").map((p) => p.ticker);
-  const pendingTickers = (orders ?? [])
-    .filter((o) => o.status === "pending" || o.status === "executing")
-    .map((o) => o.ticker);
-  const takenTickers = [...new Set([...openTickers, ...pendingTickers])];
-  const slots = countBuySlots(positions, orders, user.id);
+  const takenTickers = [...new Set(positions.filter((p) => p.status === "open").map((p) => p.ticker))];
+  const slots = countBuySlots(positions, user.id);
 
   return (
     <div className="flex flex-col gap-6">
@@ -82,28 +74,12 @@ async function Dashboard() {
           maxTickers={slots.maxTickers}
           takenTickers={takenTickers}
           cashBalance={summary.cashBalance}
-          today={today}
           marketOpen={market.open}
           marketLabel={market.label}
           userSlotsUsed={slots.userUsed}
           maxPerUser={slots.maxPerUser}
         />
       </div>
-      {orders === null && user.isAdmin ? (
-        <Alert kind="warning">
-          Compras agendadas indisponíveis: rode <code>supabase/migrations/0002_scheduled_orders.sql</code> no SQL
-          Editor do Supabase.
-        </Alert>
-      ) : null}
-      {orders?.length ? (
-        <ScheduledOrders
-          orders={orders}
-          isAdmin={user.isAdmin}
-          marketOpen={market.open}
-          currentUserId={user.id}
-          memberNames={memberNames}
-        />
-      ) : null}
       <PositionsTable
         positions={positions}
         isAdmin={user.isAdmin}

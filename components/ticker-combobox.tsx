@@ -40,7 +40,7 @@ export function TickerCombobox({
 }: {
   value: string;
   onChange: (ticker: string) => void;
-  /** Papéis que não podem ser escolhidos (já na carteira/agendados). */
+  /** Papéis que não podem ser escolhidos (já na carteira). */
   disabledTickers?: string[];
   disabled?: boolean;
   autoFocus?: boolean;

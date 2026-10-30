@@ -5,9 +5,9 @@ type DbError = { code?: string; message?: string; details?: string | null } | nu
 /** Regra da carteira: até 10 papéis, cada um comprado com exatamente 100 ações. */
 export const MAX_TICKERS = 10;
 export const SHARES_PER_TICKER = 100;
-/** Cada membro pode ter no máximo 2 papéis abertos ou agendados (0005). Vender libera a vaga. */
+/** Cada membro pode ter no máximo 2 papéis abertos (trigger da 0005). Vender libera a vaga. */
 export const MAX_PER_USER = 2;
-export const USER_LIMIT_MESSAGE = `Você já tem ${MAX_PER_USER} papéis abertos ou agendados. Venda um para liberar a vaga.`;
+export const USER_LIMIT_MESSAGE = `Você já tem ${MAX_PER_USER} papéis abertos. Venda um para liberar a vaga.`;
 
 export function friendlyDbError(error: DbError | Error): string {
   if (!error) return "Erro desconhecido.";
