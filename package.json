@@ -1,5 +1,5 @@
 {
-  "name": "app",
+  "name": "fundamentus-faculdade",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,7 +9,14 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^153.0.0",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.118.0",
+    "cheerio": "^1.2.0",
+    "exceljs": "^4.4.0",
+    "lightweight-charts": "^5.2.1",
     "next": "16.4.3",
+    "puppeteer-core": "^25.16.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
