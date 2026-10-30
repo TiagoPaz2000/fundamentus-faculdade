@@ -30,13 +30,13 @@ body {
   @apply rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900;
 }
 @utility input {
-  @apply w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950;
+  @apply w-full rounded-md border border-zinc-300 bg-white px-3 py-2.5 text-base outline-none sm:py-2 sm:text-sm focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950;
 }
 @utility label {
   @apply mb-1 block text-xs font-medium text-zinc-600 dark:text-zinc-400;
 }
 @utility btn {
-  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  @apply inline-flex min-h-10 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50;
 }
 @utility btn-primary {
   @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
@@ -48,7 +48,7 @@ body {
   @apply btn bg-red-600 text-white hover:bg-red-700;
 }
 @utility btn-xs {
-  @apply rounded px-2 py-1 text-xs;
+  @apply min-h-8 rounded px-2 py-1 text-xs;
 }
 @utility badge {
   @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;

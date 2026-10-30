@@ -22,3 +22,15 @@ export function isIsoDate(value: unknown): value is string {
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
+
+/** Dias corridos entre duas datas YYYY-MM-DD (b − a). */
+export function daysBetween(a: string, b: string): number {
+  const toUtc = (s: string) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((toUtc(b) - toUtc(a)) / 86_400_000);
+}
+
+/** Cotação mais velha que isso = papel sem negociação recente (não pode ser comprado). */
+export const MAX_QUOTE_AGE_DAYS = 7;

@@ -53,10 +53,12 @@ async function Dashboard() {
   const takenTickers = [...new Set([...openTickers, ...pendingTickers])];
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-6">
       <SummaryCards summary={summary} />
       {user.isAdmin ? (
-        <BuyForm
+        // No celular a compra vem primeiro; em telas grandes, depois dos cards.
+        <div className="order-first md:order-none">
+          <BuyForm
           slotsAvailable={summary.maxTickers - takenTickers.length}
           maxTickers={summary.maxTickers}
           takenTickers={takenTickers}
@@ -64,7 +66,8 @@ async function Dashboard() {
           today={today}
           marketOpen={market.open}
           marketLabel={market.label}
-        />
+          />
+        </div>
       ) : null}
       {orders === null && user.isAdmin ? (
         <Alert kind="warning">

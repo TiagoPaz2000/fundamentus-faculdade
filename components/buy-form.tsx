@@ -2,17 +2,21 @@
 
 import { useState, useTransition } from "react";
 import { scheduleOrder } from "@/app/actions/orders";
-import { buyPosition, lookupQuote } from "@/app/actions/positions";
-import { formatBRL, formatDate, formatPct, parseDecimal } from "@/lib/format";
+import { buyPosition, lookupQuote, type QuoteLookup } from "@/app/actions/positions";
+import { formatBRL, formatDate, formatPct, parseDecimal, signClass } from "@/lib/format";
 import { FeedbackBox, type Feedback } from "./modal";
+import { TickerCombobox } from "./ticker-combobox";
 
 /** Regra da carteira: cada papel é comprado com exatamente 100 ações. */
 const SHARES_PER_TICKER = 100;
 
-const TICKER_RE = /^[A-Z0-9]{4,12}$/;
-
 type Mode = "buy" | "schedule";
 
+/**
+ * Compra: escolhe o papel na lista → aparece a cotação atual e as 100 ações →
+ * "Comprar" registra pela cotação do momento e tira o print do Fundamentus.
+ * Fora do pregão: agenda com o preço desejado.
+ */
 export function BuyForm({
   slotsAvailable,
   maxTickers,
@@ -25,7 +29,7 @@ export function BuyForm({
   /** Vagas de papel livres: MAX_TICKERS − abertos − agendados */
   slotsAvailable: number;
   maxTickers: number;
-  /** Papéis já abertos ou com compra agendada (não podem ser comprados de novo). */
+  /** Papéis já abertos ou com compra agendada (não podem ser escolhidos). */
   takenTickers: string[];
   cashBalance: number;
   today: string;
@@ -34,232 +38,232 @@ export function BuyForm({
 }) {
   const [mode, setMode] = useState<Mode>(marketOpen ? "buy" : "schedule");
   const [ticker, setTicker] = useState("");
-  const [price, setPrice] = useState("");
+  const [quote, setQuote] = useState<QuoteLookup | null>(null);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [limitPrice, setLimitPrice] = useState("");
   const [validUntil, setValidUntil] = useState("");
-  const [quoteInfo, setQuoteInfo] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [looking, startLookup] = useTransition();
   const [saving, startSave] = useTransition();
 
-  // Se o pregão fechar com a página aberta, o servidor recusa a compra; aqui só refletimos o estado inicial.
-  const effectiveMode: Mode = marketOpen ? mode : "schedule";
-  const isBuy = effectiveMode === "buy";
+  const isBuy = marketOpen && mode === "buy";
+  const full = slotsAvailable <= 0;
+  const used = maxTickers - Math.max(0, slotsAvailable);
 
-  const t = ticker.trim().toUpperCase();
-  const priceNum = parseDecimal(price);
-  const total = Number.isFinite(priceNum) ? priceNum * SHARES_PER_TICKER : null;
+  const unitPrice = isBuy ? (quote?.price ?? null) : parseDecimal(limitPrice);
+  const total = unitPrice !== null && Number.isFinite(unitPrice) ? unitPrice * SHARES_PER_TICKER : null;
   const balanceAfter = total !== null ? cashBalance - total : null;
-  const disabled = slotsAvailable <= 0;
-  const alreadyTaken = takenTickers.includes(t);
 
-  function onLookup() {
-    if (!TICKER_RE.test(t)) {
-      setFeedback({ kind: "error", text: "Digite um ticker válido (ex: PETR4)." });
-      return;
-    }
+  function selectTicker(t: string) {
+    setTicker(t);
+    setQuote(null);
+    setQuoteError(null);
     setFeedback(null);
-    setQuoteInfo(null);
+    if (!t) return;
     startLookup(async () => {
       const res = await lookupQuote(t);
       if (!res.ok) {
-        setFeedback({ kind: "error", text: res.error });
+        setQuoteError(res.error);
         return;
       }
-      const q = res.data!;
-      setPrice(q.price.toFixed(2).replace(".", ","));
-      setQuoteInfo(
-        `${q.source === "fundamentus" ? "Fundamentus" : "InfoMoney"} em ${formatDate(q.quoteDate)}: ${formatBRL(q.price)}` +
-          (q.changePct !== null ? ` (${formatPct(q.changePct)} no dia)` : "") +
-          (q.note ? ` · ${q.note}` : ""),
-      );
+      setQuote(res.data!);
+      setLimitPrice(res.data!.price.toFixed(2).replace(".", ","));
     });
   }
 
-  function reset() {
-    setTicker("");
-    setPrice("");
-    setValidUntil("");
-    setQuoteInfo(null);
-  }
-
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!TICKER_RE.test(t)) return setFeedback({ kind: "error", text: "Ticker inválido." });
-    if (alreadyTaken)
-      return setFeedback({ kind: "error", text: `${t} já está na carteira (ou agendado). Cada papel entra uma única vez.` });
-    if (!Number.isFinite(priceNum) || priceNum <= 0)
-      return setFeedback({ kind: "error", text: isBuy ? "Informe um preço de compra válido." : "Informe o preço desejado." });
-    if (!isBuy && validUntil && validUntil < today)
-      return setFeedback({ kind: "error", text: "A validade precisa ser hoje ou uma data futura." });
-
+  function submit() {
+    if (!ticker) return;
     setFeedback(null);
     startSave(async () => {
-      const res = isBuy
-        ? await buyPosition({ ticker: t, buyPrice: priceNum })
-        : await scheduleOrder({ ticker: t, limitPrice: priceNum, validUntil: validUntil || null });
-      if (!res.ok) {
-        setFeedback({ kind: "error", text: res.error });
-        return;
+      if (isBuy) {
+        const res = await buyPosition({ ticker });
+        if (!res.ok) return setFeedback({ kind: "error", text: res.error });
+        setFeedback({ kind: "success", text: res.message ?? "Compra registrada.", extra: res.warnings });
+      } else {
+        const price = parseDecimal(limitPrice);
+        if (!Number.isFinite(price) || price <= 0) return setFeedback({ kind: "error", text: "Informe o preço desejado." });
+        if (validUntil && validUntil < today)
+          return setFeedback({ kind: "error", text: "A validade precisa ser hoje ou uma data futura." });
+        const res = await scheduleOrder({ ticker, limitPrice: price, validUntil: validUntil || null });
+        if (!res.ok) return setFeedback({ kind: "error", text: res.error });
+        setFeedback({ kind: "success", text: res.message ?? "Compra agendada." });
       }
-      setFeedback({ kind: "success", text: res.message ?? "Feito.", extra: res.warnings });
-      reset();
+      setTicker("");
+      setQuote(null);
+      setLimitPrice("");
+      setValidUntil("");
     });
   }
 
-  const tabClass = (active: boolean) =>
-    `rounded px-3 py-1 text-sm ${
+  const tab = (active: boolean) =>
+    `flex-1 rounded-md px-3 py-2.5 text-sm font-medium sm:flex-none sm:py-1.5 ${
       active
         ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-        : "text-zinc-600 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:text-zinc-300 dark:hover:bg-zinc-800"
+        : "text-zinc-600 disabled:opacity-40 dark:text-zinc-300"
     }`;
 
   return (
-    <form onSubmit={onSubmit} className="card space-y-4 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700">
+    <section className="card space-y-4 p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex rounded-lg border border-zinc-200 p-1 dark:border-zinc-700">
           <button
             type="button"
-            className={tabClass(isBuy)}
+            className={tab(isBuy)}
             onClick={() => setMode("buy")}
-            disabled={!marketOpen}
-            title={marketOpen ? undefined : marketLabel}
+            disabled={!marketOpen || saving}
           >
             Comprar agora
           </button>
-          <button type="button" className={tabClass(!isBuy)} onClick={() => setMode("schedule")}>
+          <button type="button" className={tab(!isBuy)} onClick={() => setMode("schedule")} disabled={saving}>
             Agendar compra
           </button>
         </div>
-        <span className="text-xs text-zinc-500">
-          Vagas ocupadas (abertos + agendados): <strong>{maxTickers - Math.max(0, slotsAvailable)}</strong>/{maxTickers} · livres:{" "}
-          <strong>{Math.max(0, slotsAvailable)}</strong> · cada compra = {SHARES_PER_TICKER} ações
-        </span>
+        <div className="text-xs text-zinc-500">
+          Papéis: <strong>{used}</strong>/{maxTickers} (abertos + agendados) · cada compra = {SHARES_PER_TICKER} ações
+        </div>
       </div>
 
-      <div
-        className={`flex items-center gap-2 text-xs ${marketOpen ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}
+      <p
+        className={`flex items-start gap-2 text-xs ${marketOpen ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}
       >
-        <span className={`inline-block h-2 w-2 rounded-full ${marketOpen ? "bg-emerald-500" : "bg-amber-500"}`} />
-        {marketLabel}
-        {!marketOpen ? ". Defina o preço e agende: a compra é feita no pregão quando a cotação chegar nele." : ""}
-      </div>
+        <span className={`mt-1 inline-block h-2 w-2 shrink-0 rounded-full ${marketOpen ? "bg-emerald-500" : "bg-amber-500"}`} />
+        <span>
+          {marketLabel}
+          {!marketOpen ? ". Agende com o preço desejado: a compra é feita no pregão quando a cotação chegar nele." : ""}
+        </span>
+      </p>
 
-      {disabled ? (
+      {full ? (
         <FeedbackBox
           feedback={{
             kind: "warning",
             text: `A carteira já tem ${maxTickers} papéis (abertos + agendados). Feche uma posição ou cancele um agendamento para escolher outro.`,
           }}
         />
-      ) : null}
-
-      <fieldset disabled={disabled || saving} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <div className="lg:col-span-2">
-          <label className="label" htmlFor="buy-ticker">
-            Papel (ticker)
-          </label>
-          <div className="flex gap-2">
-            <input
-              id="buy-ticker"
-              className="input uppercase"
-              placeholder="PETR4"
+      ) : (
+        <>
+          <div>
+            <label className="label">Papel</label>
+            <TickerCombobox
               value={ticker}
-              onChange={(e) => {
-                setTicker(e.target.value.toUpperCase());
-                setQuoteInfo(null);
-              }}
-              maxLength={12}
-              autoComplete="off"
-              required
-            />
-            <button
-              type="button"
-              className="btn-secondary shrink-0"
-              onClick={onLookup}
-              disabled={looking || !TICKER_RE.test(t)}
-              title="Buscar cotação atual (Fundamentus, com fallback InfoMoney)"
-            >
-              {looking ? "Buscando…" : "Buscar cotação atual"}
-            </button>
-          </div>
-        </div>
-        <div>
-          <span className="label">Quantidade</span>
-          <div className="input bg-zinc-50 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
-            {SHARES_PER_TICKER} ações (fixo)
-          </div>
-        </div>
-        <div>
-          <label className="label" htmlFor="buy-price">
-            {isBuy ? "Preço de compra (R$)" : "Preço desejado (máx., R$)"}
-          </label>
-          <input
-            id="buy-price"
-            className="input"
-            inputMode="decimal"
-            placeholder="0,00"
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            required
-          />
-        </div>
-        {isBuy ? (
-          <div>
-            <span className="label">Data da compra</span>
-            <div className="input bg-zinc-50 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">{formatDate(today)}</div>
-          </div>
-        ) : (
-          <div>
-            <label className="label" htmlFor="buy-valid">
-              Válida até (opcional)
-            </label>
-            <input
-              id="buy-valid"
-              className="input"
-              type="date"
-              min={today}
-              value={validUntil}
-              onChange={(e) => setValidUntil(e.target.value)}
+              onChange={selectTicker}
+              disabledTickers={takenTickers}
+              disabled={saving}
             />
           </div>
-        )}
-      </fieldset>
 
-      {alreadyTaken ? (
-        <p className="text-xs text-red-600">{t} já está na carteira ou tem compra agendada: cada papel entra uma única vez.</p>
-      ) : null}
-      {quoteInfo ? <p className="text-xs text-zinc-500">{quoteInfo}</p> : null}
+          {ticker ? (
+            <div className="space-y-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold">{ticker}</div>
+                  <div className="text-xs text-zinc-500">
+                    {looking
+                      ? "Buscando cotação atual…"
+                      : quote
+                        ? `${quote.source === "fundamentus" ? "Fundamentus" : "InfoMoney"} · ${formatDate(quote.quoteDate)}${quote.note ? ` · ${quote.note}` : ""}`
+                        : (quoteError ?? "")}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-zinc-500">Valor atual</div>
+                  <div className="text-2xl font-semibold tabular-nums">
+                    {looking ? <span className="animate-pulse text-zinc-400">…</span> : formatBRL(quote?.price)}
+                  </div>
+                  {quote && !quote.stale && quote.changePct !== null ? (
+                    <div className={`text-sm tabular-nums ${signClass(quote.changePct)}`}>{formatPct(quote.changePct)} hoje</div>
+                  ) : null}
+                </div>
+              </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-zinc-600 dark:text-zinc-400">
-          {isBuy ? "Total" : "Total máximo"}: <strong>{formatBRL(total)}</strong>
-          {balanceAfter !== null ? (
-            <>
-              {" "}
-              · Caixa {isBuy ? "após a compra" : "se executar"}:{" "}
-              <strong className={balanceAfter < 0 ? "text-red-600" : ""}>{formatBRL(balanceAfter)}</strong>
-            </>
+              {quote?.stale ? (
+                <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                  {ticker} não tem negociação recente (última cotação em {formatDate(quote.quoteDate)}). Escolha outro
+                  papel.
+                </p>
+              ) : null}
+
+              {!isBuy ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="label" htmlFor="limit-price">
+                      Preço desejado (máximo por ação)
+                    </label>
+                    <input
+                      id="limit-price"
+                      className="input"
+                      inputMode="decimal"
+                      placeholder="0,00"
+                      value={limitPrice}
+                      onChange={(e) => setLimitPrice(e.target.value)}
+                      disabled={saving}
+                    />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="valid-until">
+                      Válida até (opcional)
+                    </label>
+                    <input
+                      id="valid-until"
+                      className="input"
+                      type="date"
+                      min={today}
+                      value={validUntil}
+                      onChange={(e) => setValidUntil(e.target.value)}
+                      disabled={saving}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <dl className="grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-md bg-zinc-50 p-2 dark:bg-zinc-800/60">
+                  <dt className="text-[11px] uppercase tracking-wide text-zinc-500">Quantidade</dt>
+                  <dd className="whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base">{SHARES_PER_TICKER}</dd>
+                </div>
+                <div className="rounded-md bg-zinc-50 p-2 dark:bg-zinc-800/60">
+                  <dt className="text-[11px] uppercase tracking-wide text-zinc-500">{isBuy ? "Total" : "Total máx."}</dt>
+                  <dd className="whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base">{formatBRL(total)}</dd>
+                </div>
+                <div className="rounded-md bg-zinc-50 p-2 dark:bg-zinc-800/60">
+                  <dt className="text-[11px] uppercase tracking-wide text-zinc-500">Caixa depois</dt>
+                  <dd className={`whitespace-nowrap text-sm font-semibold tabular-nums sm:text-base ${balanceAfter !== null && balanceAfter < 0 ? "text-red-600" : ""}`}>
+                    {formatBRL(balanceAfter)}
+                  </dd>
+                </div>
+              </dl>
+
+              {balanceAfter !== null && balanceAfter < 0 ? (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  O saldo em caixa vai ficar negativo. Dá para continuar mesmo assim.
+                </p>
+              ) : null}
+
+              <button
+                type="button"
+                className="btn-primary w-full whitespace-normal py-3 text-base"
+                onClick={submit}
+                disabled={saving || looking || (isBuy && !quote) || Boolean(quote?.stale)}
+              >
+                {saving
+                  ? isBuy
+                    ? "Comprando e tirando o print…"
+                    : "Agendando…"
+                  : isBuy
+                    ? `Comprar ${SHARES_PER_TICKER} ${ticker}${quote ? ` por ${formatBRL(quote.price)}` : ""}`
+                    : `Agendar ${SHARES_PER_TICKER} ${ticker}`}
+              </button>
+              {saving && isBuy ? (
+                <p className="text-center text-xs text-zinc-500">
+                  O preço final é a cotação no momento da compra. O print do Fundamentus pode levar até 1 minuto.
+                </p>
+              ) : null}
+            </div>
           ) : null}
-        </div>
-        <button type="submit" className="btn-primary" disabled={disabled || saving || alreadyTaken}>
-          {saving ? (isBuy ? "Salvando e tirando print…" : "Agendando…") : isBuy ? "Registrar compra" : "Agendar compra"}
-        </button>
-      </div>
+        </>
+      )}
 
-      {balanceAfter !== null && balanceAfter < 0 && !saving ? (
-        <FeedbackBox
-          feedback={{
-            kind: "warning",
-            text: "Essa compra deixa o saldo em caixa negativo. Você pode continuar mesmo assim.",
-          }}
-        />
-      ) : null}
-      {saving && isBuy ? (
-        <p className="text-xs text-zinc-500">
-          Registrando a compra, tirando o print do Fundamentus e importando o histórico. Pode levar até 1 minuto.
-        </p>
-      ) : null}
       <FeedbackBox feedback={feedback} />
-    </form>
+    </section>
   );
 }

@@ -77,7 +77,62 @@ export function PositionsTable({
             : "Nenhuma posição neste filtro."}
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <>
+        {/* Celular: cartões */}
+        <ul className="divide-y divide-zinc-100 md:hidden dark:divide-zinc-800">
+          {rows.map((p) => (
+            <li key={p.id} className="space-y-3 px-4 py-4" onClick={() => router.push(`/papel/${p.ticker}`)}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg font-semibold">{p.ticker}</span>
+                    <StatusBadge status={p.status} />
+                  </div>
+                  <div className="text-xs text-zinc-500">
+                    {formatInt(p.quantity)} × {formatBRL(p.buy_price)} em {formatDate(p.buy_date)}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="font-semibold tabular-nums">
+                    {p.status === "closed" ? formatBRL(p.sell_price) : formatBRL(p.current?.price)}
+                  </div>
+                  <div className={`text-xs tabular-nums ${signClass(p.current?.changePct)}`}>
+                    {p.status === "closed" ? `venda ${formatDate(p.sell_date)}` : `${formatPct(p.current?.changePct)} hoje`}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-500">Desde a compra</span>
+                <span className={`tabular-nums ${signClass(p.varPct)}`}>
+                  {formatBRL(p.varBRL)} ({formatPct(p.varPct)})
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                {p.buyScreenshotUrl ? (
+                  <ScreenshotLink url={p.buyScreenshotUrl} label="print compra" title={`${p.ticker} · print da compra`} />
+                ) : (
+                  <span className="text-xs text-amber-600">sem print compra</span>
+                )}
+                {p.status === "closed" ? (
+                  p.sellScreenshotUrl ? (
+                    <ScreenshotLink url={p.sellScreenshotUrl} label="print venda" title={`${p.ticker} · print da venda`} />
+                  ) : (
+                    <span className="text-xs text-amber-600">sem print venda</span>
+                  )
+                ) : null}
+                {isAdmin ? (
+                  <div className="ml-auto flex gap-2">
+                    {p.status === "open" ? <ClosePositionButton position={p} today={today} /> : null}
+                    <ManagePositionButton position={p} today={today} />
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        {/* Tela grande: tabela */}
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900/60">
               <tr>
@@ -177,7 +232,16 @@ export function PositionsTable({
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
+  );
+}
+
+function StatusBadge({ status }: { status: PositionView["status"] }) {
+  return status === "open" ? (
+    <span className="badge bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">Aberta</span>
+  ) : (
+    <span className="badge bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">Fechada</span>
   );
 }

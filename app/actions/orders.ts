@@ -3,12 +3,12 @@
 import { refresh } from "next/cache";
 import { fail, type ActionResult } from "@/lib/action-result";
 import { AuthError, requireAdmin } from "@/lib/auth";
-import { isIsoDate, todaySP } from "@/lib/dates";
+import { MAX_QUOTE_AGE_DAYS, daysBetween, isIsoDate, todaySP } from "@/lib/dates";
 import { SHARES_PER_TICKER, errorMessage, friendlyDbError } from "@/lib/errors";
 import { formatBRL, formatDate } from "@/lib/format";
 import { marketStatus } from "@/lib/market-hours";
 import { checkTickerSlot } from "@/lib/portfolio";
-import { normalizeTicker } from "@/lib/quotes";
+import { fetchCurrentQuote, normalizeTicker } from "@/lib/quotes";
 import { executeDueOrders, type OrderRunResult } from "@/lib/scheduled-orders";
 import { createClient } from "@/lib/supabase/server";
 
@@ -42,6 +42,18 @@ export async function scheduleOrder(input: ScheduleInput): Promise<ActionResult>
     const slotError = await checkTickerSlot(supabase, ticker);
     if (slotError) return fail(slotError);
 
+    // Não deixa agendar papel sem negociação (ocuparia uma vaga para sempre).
+    // Se os sites estiverem fora do ar, agenda mesmo assim.
+    const warnings: string[] = [];
+    try {
+      const { quote } = await fetchCurrentQuote(ticker);
+      if (daysBetween(quote.quoteDate, todaySP()) > MAX_QUOTE_AGE_DAYS) {
+        return fail(`${ticker} não tem negociação recente (última cotação em ${formatDate(quote.quoteDate)}). Escolha outro papel.`);
+      }
+    } catch (e) {
+      warnings.push(`Não deu para conferir a cotação de ${ticker} agora (${errorMessage(e)}).`);
+    }
+
     const { error } = await supabase.from("scheduled_orders").insert({
       ticker,
       quantity: SHARES_PER_TICKER,
@@ -64,6 +76,7 @@ export async function scheduleOrder(input: ScheduleInput): Promise<ActionResult>
         `Compra agendada: ${SHARES_PER_TICKER} ações de ${ticker} a até ${formatBRL(input.limitPrice)}` +
         (validUntil ? `, válida até ${formatDate(validUntil)}` : "") +
         `. Será executada no horário do pregão (${market.openTime}–${market.closeTime}) quando a cotação estiver nesse preço ou abaixo.`,
+      warnings,
     };
   } catch (err) {
     return guard(err);
