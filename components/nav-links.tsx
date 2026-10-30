@@ -7,6 +7,7 @@ export function NavLinks({ isAdmin }: { isAdmin: boolean }) {
   const pathname = usePathname();
   const links = [
     { href: "/", label: "Carteira" },
+    { href: "/empresas", label: "Empresas" },
     { href: "/caixa", label: "Caixa" },
     ...(isAdmin ? [{ href: "/usuarios", label: "Membros" }] : []),
   ];

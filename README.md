@@ -154,3 +154,12 @@ supabase/migrations/0001_init.sql … 0005_compras_por_usuario.sql
 - A "cotação atual" é a cotação mais recente gravada no banco (atualizada pelo cron, por uma compra ou por "buscar cotação"). Se as duas fontes têm cotação do mesmo dia, vale a do InfoMoney.
 - O print usa Chromium em função serverless: a primeira execução (cold start) pode levar de 10 a 20 s.
 - Excluir uma posição apaga também os lançamentos de caixa dela (cascade) e os prints.
+
+## Aba Empresas
+
+Lista os ~1000 papéis do Fundamentus (código, empresa, razão social, setor) com **Mês %** e **Dia %**, busca, filtro por setor, filtro "Desempenho do mês" (Top 10/20/50, Só em alta), ordenação e paginação de 50. Os filtros ficam na URL (`?setor=…&top=10&pagina=2`).
+
+- **Nomes**: `detalhes.php` do Fundamentus (1 requisição, rápida).
+- **Setores**: `resultado.php?setor=N` para os ~43 setores. O Fundamentus devolve página vazia se receber rajadas, então as consultas são sequenciais com 3 s de intervalo: a **primeira carga leva ~2 min** por instância (a tabela aparece antes; só o filtro de setor espera). Cache de 1 dia. Só papéis com negociação aparecem nas páginas de setor; os demais ficam como "Sem setor".
+- **Mês %**: API do InfoMoney, calculado sobre o **último fechamento do mês anterior** até a cotação mais recente, para os ~400 papéis mais líquidos negociados no mês. Pode diferir um pouco do "Mês" do Fundamentus, que usa o penúltimo pregão como base. Cache de horas. Variável opcional: `INFOMONEY_API_KEY`.
+- Se a primeira carga de setores incomodar em produção, a alternativa é um cron diário gravando papel → setor no banco.
