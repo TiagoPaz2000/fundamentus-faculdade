@@ -18,6 +18,13 @@ export async function loadMemberNames(supabase: SupabaseClient<Database>): Promi
   return Object.fromEntries((data ?? []).map((p) => [p.id, displayName(p.email)]));
 }
 
+/** Ids dos admins (não compram; ficam fora do placar). Não lança. */
+export async function loadAdminIds(supabase: SupabaseClient<Database>): Promise<string[]> {
+  const { data, error } = await supabase.from("profiles").select("id").eq("is_admin", true);
+  if (error) console.error("profiles (admins):", error.message);
+  return (data ?? []).map((p) => p.id);
+}
+
 /** Nome de quem comprou/vendeu: membro atual, "ex-membro" ou "—" se não registrado. */
 export function memberLabel(userId: string | null | undefined, names: MemberNames): string {
   if (!userId) return "—";

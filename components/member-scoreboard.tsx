@@ -20,14 +20,19 @@ export function MemberScoreboard({
   memberNames,
   currentUserId,
   maxPerUser,
+  adminIds = [],
 }: {
   positions: PositionView[];
   memberNames: Record<string, string>;
   currentUserId: string;
   maxPerUser: number;
+  /** Admins não compram: ficam fora do placar (salvo se tiverem posições). */
+  adminIds?: string[];
 }) {
+  const buyers = new Set(positions.map((p) => p.created_by));
   const rows = new Map<string, Row>();
   for (const [id, name] of Object.entries(memberNames)) {
+    if (adminIds.includes(id) && !buyers.has(id)) continue;
     rows.set(id, { id, name, open: 0, invested: 0, result: 0 });
   }
   const EX = "__ex__";
