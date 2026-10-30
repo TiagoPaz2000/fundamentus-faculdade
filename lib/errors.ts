@@ -2,29 +2,30 @@
 
 type DbError = { code?: string; message?: string; details?: string | null } | null | undefined;
 
-export const PORTFOLIO_LIMIT = 100;
+/** Regra da carteira: até 10 papéis, cada um comprado com exatamente 100 ações. */
+export const MAX_TICKERS = 10;
+export const SHARES_PER_TICKER = 100;
 
 export function friendlyDbError(error: DbError | Error): string {
   if (!error) return "Erro desconhecido.";
   const message = error.message ?? "";
   const code = "code" in error ? error.code : undefined;
 
-  const limit = message.match(/Limite da carteira: (\d+) ações abertas \+ (\d+) excede 100 \(disponível: (-?\d+)\)/);
-  if (limit) {
-    const available = Math.max(0, Number(limit[3]));
-    return available === 0
-      ? `A carteira já tem ${limit[1]} ações abertas (limite de ${PORTFOLIO_LIMIT}). Feche alguma posição antes de comprar.`
-      : `Limite de ${PORTFOLIO_LIMIT} ações abertas: a carteira já tem ${limit[1]}, então você pode comprar no máximo ${available}.`;
-  }
+  let m = message.match(/Regra da carteira: ([A-Z0-9]+) já tem uma posição aberta/);
+  if (m) return `${m[1]} já está na carteira (posição aberta). Cada papel entra uma vez, com ${SHARES_PER_TICKER} ações.`;
+  m = message.match(/Regra da carteira: já existem ([0-9]+) papéis abertos/);
+  if (m) return `A carteira já tem ${m[1]} papéis abertos (máximo ${MAX_TICKERS}). Feche uma posição antes de comprar outro papel.`;
+  if (/Regra da carteira: cada papel/.test(message)) return `Cada compra é de exatamente ${SHARES_PER_TICKER} ações.`;
   if (/Limite da carteira/i.test(message)) {
-    return `Essa operação ultrapassa o limite de ${PORTFOLIO_LIMIT} ações abertas na carteira.`;
+    // trigger antigo da 0001 (limite de 100 ações no total): falta rodar a 0003
+    return "O banco ainda usa o limite antigo de 100 ações no total. Rode supabase/migrations/0003_ten_tickers.sql.";
   }
   if (code === "42501" || /row-level security/i.test(message)) {
     return "Você não tem permissão para essa operação (apenas administradores).";
   }
   if (code === "23514") {
     if (/último admin/i.test(message)) return "Não é possível remover o último admin.";
-    if (/quantity/i.test(message)) return "A quantidade deve ser entre 1 e 100.";
+    if (/quantity/i.test(message)) return `Cada compra é de exatamente ${SHARES_PER_TICKER} ações.`;
     if (/buy_price|sell_price/i.test(message)) return "O preço deve ser maior que zero.";
     if (/ticker/i.test(message)) return "O ticker deve estar em maiúsculas.";
     return "Os dados violam uma regra do banco. Confira os valores informados.";

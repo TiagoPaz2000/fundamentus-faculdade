@@ -109,7 +109,8 @@ export async function GET() {
     ["Valor investido (abertas)", s.investedOpen, BRL],
     ["Valor de mercado (abertas)", s.marketValueOpen, BRL],
     ["Resultado total", s.totalResult, BRL],
-    ["Ações abertas", s.openShares, `0"/${s.limit}"`],
+    ["Papéis na carteira", s.openTickers, `0"/${s.maxTickers}"`],
+    ["Ações abertas (100 por papel)", s.openShares, "0"],
   ];
   for (const [label, value, fmt] of summaryRows) {
     const row = ws.addRow({ ticker: label });

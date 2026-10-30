@@ -14,7 +14,7 @@ import { formatBRL, formatDate, formatPct, parseDecimal } from "@/lib/format";
 import type { PositionView } from "@/lib/portfolio";
 import { FeedbackBox, Modal, type Feedback } from "./modal";
 
-type Props = { position: PositionView; today: string; maxQtyForEdit: number };
+type Props = { position: PositionView; today: string };
 
 function priceToInput(n: number | null | undefined) {
   return n === null || n === undefined ? "" : String(Number(n.toFixed(4))).replace(".", ",");
@@ -153,20 +153,18 @@ export function ClosePositionButton({ position, today }: { position: PositionVie
 // Gerenciar (editar, reabrir, excluir, prints, histórico)
 // ---------------------------------------------------------------------------
 
-export function ManagePositionButton({ position, today, maxQtyForEdit }: Props) {
+export function ManagePositionButton({ position, today }: Props) {
   const [open, setOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [pending, start] = useTransition();
   const closed = position.status === "closed";
 
-  const [qty, setQty] = useState(String(position.quantity));
   const [buyDate, setBuyDate] = useState(position.buy_date);
   const [buyPrice, setBuyPrice] = useState(priceToInput(position.buy_price));
   const [sellDate, setSellDate] = useState(position.sell_date ?? "");
   const [sellPrice, setSellPrice] = useState(priceToInput(position.sell_price));
 
   function openDialog() {
-    setQty(String(position.quantity));
     setBuyDate(position.buy_date);
     setBuyPrice(priceToInput(position.buy_price));
     setSellDate(position.sell_date ?? "");
@@ -187,14 +185,10 @@ export function ManagePositionButton({ position, today, maxQtyForEdit }: Props) 
 
   function save(e: React.FormEvent) {
     e.preventDefault();
-    const q = Number(qty);
-    if (!Number.isInteger(q) || q < 1 || q > maxQtyForEdit)
-      return setFeedback({ kind: "error", text: `Quantidade deve ser entre 1 e ${maxQtyForEdit}.` });
     run(
       () =>
         updatePosition({
           id: position.id,
-          quantity: q,
           buyDate,
           buyPrice: parseDecimal(buyPrice),
           sellDate: closed ? sellDate : null,
@@ -215,15 +209,10 @@ export function ManagePositionButton({ position, today, maxQtyForEdit }: Props) 
             <h3 className="text-sm font-semibold">Editar valores</h3>
             <fieldset disabled={pending} className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label">Quantidade (máx. {maxQtyForEdit})</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={maxQtyForEdit}
-                  value={qty}
-                  onChange={(e) => setQty(e.target.value)}
-                />
+                <span className="label">Quantidade</span>
+                <div className="input bg-zinc-50 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
+                  {position.quantity} ações (fixo)
+                </div>
               </div>
               <div>
                 <label className="label">Preço de compra (R$)</label>

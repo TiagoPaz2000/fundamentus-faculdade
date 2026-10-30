@@ -9,9 +9,9 @@ import { ScreenshotLink } from "@/components/screenshot-link";
 import { requireUser } from "@/lib/auth";
 import type { Quote } from "@/lib/database.types";
 import { todaySP } from "@/lib/dates";
-import { PORTFOLIO_LIMIT } from "@/lib/errors";
+import { MAX_TICKERS } from "@/lib/errors";
 import { formatBRL, formatDate, formatInt, formatNumber, formatPct, signClass } from "@/lib/format";
-import { fetchAll, getOpenShares, loadPortfolio } from "@/lib/portfolio";
+import { fetchAll, getOpenTickers, loadPortfolio } from "@/lib/portfolio";
 import { normalizeTicker } from "@/lib/quotes";
 import { createClient } from "@/lib/supabase/server";
 
@@ -52,9 +52,9 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
   let quotes: Pick<Quote, "quote_date" | "open" | "high" | "low" | "price" | "volume">[];
   let fundamentus: Pick<Quote, "quote_date" | "price" | "change_pct" | "raw"> | null;
   let portfolio: Awaited<ReturnType<typeof loadPortfolio>>;
-  let openShares: number;
+  let openTickers: string[];
   try {
-    [quotes, fundamentus, portfolio, openShares] = await Promise.all([
+    [quotes, fundamentus, portfolio, openTickers] = await Promise.all([
       fetchAll<Pick<Quote, "quote_date" | "open" | "high" | "low" | "price" | "volume">>((from, to) =>
         supabase
           .from("quotes")
@@ -74,7 +74,7 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
         .maybeSingle()
         .then(({ data }) => data),
       loadPortfolio(supabase, { ticker }),
-      getOpenShares(supabase),
+      getOpenTickers(supabase),
     ]);
   } catch (err) {
     return <ErrorBlock error={err} />;
@@ -178,7 +178,7 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-semibold">Posições em {ticker}</h2>
           <span className="text-sm text-zinc-500">
-            {formatInt(openQty)} ação(ões) aberta(s) neste papel · carteira {openShares}/{PORTFOLIO_LIMIT}
+            {formatInt(openQty)} ação(ões) aberta(s) neste papel · carteira com {openTickers.length}/{MAX_TICKERS} papéis
           </span>
         </div>
         {positions.length ? (
@@ -232,8 +232,6 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
             positions={positions}
             isAdmin
             today={todaySP()}
-            openShares={openShares}
-            limit={PORTFOLIO_LIMIT}
             initialFilter="all"
             showFilter={false}
           />

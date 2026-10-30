@@ -1,6 +1,6 @@
-import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { allSettledLimit } from "@/lib/concurrency";
+import { checkCronAuth } from "@/lib/cron-auth";
 import { errorMessage } from "@/lib/errors";
 import { upsertQuotes } from "@/lib/quotes";
 import { scrapeFundamentus } from "@/lib/scrapers/fundamentus";
@@ -13,25 +13,13 @@ export const maxDuration = 300;
 
 const CONCURRENCY = 4;
 
-function authorized(header: string): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  const expected = Buffer.from(`Bearer ${secret}`);
-  const got = Buffer.from(header);
-  return got.length === expected.length && timingSafeEqual(got, expected);
-}
-
 type SourceResult = { ok: true; price: number; quoteDate: string } | { ok: false; error: string };
 
 export async function GET(request: NextRequest) {
   // Lê o request antes de tudo: assim a rota nunca é pré-renderizada no build.
   const authHeader = request.headers.get("authorization") ?? "";
-  if (!process.env.CRON_SECRET) {
-    return Response.json({ ok: false, error: "CRON_SECRET não configurado" }, { status: 500 });
-  }
-  if (!authorized(authHeader)) {
-    return Response.json({ ok: false, error: "Não autorizado" }, { status: 401 });
-  }
+  const denied = checkCronAuth(authHeader);
+  if (denied) return denied;
 
   const startedAt = Date.now();
   const admin = createAdminClient();

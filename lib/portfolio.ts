@@ -1,7 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { CashMovement, Database, Position, Quote } from "@/lib/database.types";
-import { PORTFOLIO_LIMIT, friendlyDbError } from "@/lib/errors";
+import type { CashMovement, Database, Position, Quote, ScheduledOrder } from "@/lib/database.types";
+import { MAX_TICKERS, SHARES_PER_TICKER, friendlyDbError } from "@/lib/errors";
 import { SCREENSHOT_BUCKET } from "@/lib/quotes";
 
 type Client = SupabaseClient<Database>;
@@ -32,8 +32,11 @@ export type PortfolioSummary = {
   unrealized: number;
   realized: number;
   totalResult: number;
+  /** Total de ações em posições abertas. */
   openShares: number;
-  limit: number;
+  /** Papéis com posição aberta (máximo MAX_TICKERS). */
+  openTickers: number;
+  maxTickers: number;
 };
 
 const PAGE = 1000;
@@ -136,9 +139,11 @@ export function summarize(views: PositionView[], cashBalance: number): Portfolio
   let unrealized = 0;
   let realized = 0;
   let openShares = 0;
+  const tickers = new Set<string>();
   for (const v of views) {
     if (v.status === "open") {
       openShares += v.quantity;
+      tickers.add(v.ticker);
       investedOpen += v.buyTotal;
       // Sem cotação: considera o preço de compra (variação zero).
       marketValueOpen += v.marketValue ?? v.buyTotal;
@@ -155,7 +160,8 @@ export function summarize(views: PositionView[], cashBalance: number): Portfolio
     realized,
     totalResult: unrealized + realized,
     openShares,
-    limit: PORTFOLIO_LIMIT,
+    openTickers: tickers.size,
+    maxTickers: MAX_TICKERS,
   };
 }
 
@@ -196,12 +202,80 @@ export async function loadPortfolio(
   return { positions: views, summary: summarize(views, cashBalance) };
 }
 
-export async function getOpenShares(supabase: Client, excludeId?: string): Promise<number> {
-  let q = supabase.from("positions").select("id, quantity").eq("status", "open");
-  if (excludeId) q = q.neq("id", excludeId);
+/** Papéis com posição aberta (distintos). */
+export async function getOpenTickers(supabase: Client, excludePositionId?: string): Promise<string[]> {
+  let q = supabase.from("positions").select("id, ticker").eq("status", "open");
+  if (excludePositionId) q = q.neq("id", excludePositionId);
   const { data, error } = await q;
   if (error) throw new Error(friendlyDbError(error));
-  return (data ?? []).reduce((s, r) => s + r.quantity, 0);
+  return [...new Set((data ?? []).map((r) => r.ticker))];
+}
+
+/**
+ * Agendamentos: pendentes primeiro, depois os mais recentes.
+ * Devolve null se a tabela não existir (migration 0002 não aplicada).
+ */
+export async function loadScheduledOrders(supabase: Client): Promise<ScheduledOrder[] | null> {
+  const { data, error } = await supabase
+    .from("scheduled_orders")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) {
+    console.error("scheduled_orders:", error.message);
+    return null;
+  }
+  const rank = (s: ScheduledOrder["status"]) => (s === "pending" || s === "executing" ? 0 : 1);
+  return (data ?? [])
+    .map((o) => ({
+      ...o,
+      limit_price: Number(o.limit_price),
+      executed_price: o.executed_price === null ? null : Number(o.executed_price),
+      last_check_price: o.last_check_price === null ? null : Number(o.last_check_price),
+    }))
+    .sort((a, b) => rank(a.status) - rank(b.status));
+}
+
+/** Papéis reservados por compras agendadas ainda não executadas. */
+export async function getPendingOrderTickers(supabase: Client, excludeOrderId?: string): Promise<string[]> {
+  let q = supabase.from("scheduled_orders").select("id, ticker").in("status", ["pending", "executing"]);
+  if (excludeOrderId) q = q.neq("id", excludeOrderId);
+  const { data, error } = await q;
+  if (error) {
+    // Ex.: migration 0002 ainda não aplicada. Não bloqueia o resto do app.
+    console.error("scheduled_orders:", error.message);
+    return [];
+  }
+  return [...new Set((data ?? []).map((r) => r.ticker))];
+}
+
+/**
+ * Regra da carteira: até MAX_TICKERS papéis, cada um com uma única posição aberta de
+ * SHARES_PER_TICKER ações. Agendamentos pendentes reservam a vaga do papel.
+ * Devolve a mensagem de erro, ou null se o papel pode entrar.
+ */
+export async function checkTickerSlot(
+  supabase: Client,
+  ticker: string,
+  opts: { excludePositionId?: string; excludeOrderId?: string } = {},
+): Promise<string | null> {
+  const [open, pending] = await Promise.all([
+    getOpenTickers(supabase, opts.excludePositionId),
+    getPendingOrderTickers(supabase, opts.excludeOrderId),
+  ]);
+  if (open.includes(ticker)) {
+    return `${ticker} já está na carteira. Cada papel entra uma única vez, com ${SHARES_PER_TICKER} ações.`;
+  }
+  if (pending.includes(ticker)) {
+    return `${ticker} já tem uma compra agendada. Cancele o agendamento antes de comprar de novo.`;
+  }
+  const used = new Set([...open, ...pending]).size;
+  if (used >= MAX_TICKERS) {
+    return `A carteira já tem ${MAX_TICKERS} papéis (${open.length} abertos` +
+      (pending.length ? ` + ${pending.length} agendados` : "") +
+      `). Feche uma posição ou cancele um agendamento para escolher outro papel.`;
+  }
+  return null;
 }
 
 export async function loadCashMovements(supabase: Client) {

@@ -5,9 +5,11 @@ import type { ActionResult } from "@/lib/action-result";
 import { fail } from "@/lib/action-result";
 import { AuthError, requireAdmin } from "@/lib/auth";
 import { addDays, isIsoDate, todaySP } from "@/lib/dates";
-import { PORTFOLIO_LIMIT, errorMessage, friendlyDbError } from "@/lib/errors";
+import { SHARES_PER_TICKER, errorMessage, friendlyDbError } from "@/lib/errors";
 import { formatBRL, formatDate } from "@/lib/format";
-import { getCashBalance, getOpenShares } from "@/lib/portfolio";
+import { checkTickerSlot, getCashBalance } from "@/lib/portfolio";
+import { HISTORY_DAYS_BEFORE_BUY, runBuyFollowups } from "@/lib/buy-followup";
+import { marketStatus } from "@/lib/market-hours";
 import {
   captureFundamentusScreenshot,
   fetchCurrentQuote,
@@ -19,8 +21,6 @@ import {
 } from "@/lib/quotes";
 import { createClient } from "@/lib/supabase/server";
 
-const HISTORY_DAYS_BEFORE_BUY = 180;
-
 function guard(err: unknown): { ok: false; error: string } {
   if (err instanceof AuthError) return fail(err.message);
   console.error(err);
@@ -29,10 +29,6 @@ function guard(err: unknown): { ok: false; error: string } {
 
 function validPrice(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v) && v > 0 && v < 1e9;
-}
-
-function validQty(v: unknown): v is number {
-  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= PORTFOLIO_LIMIT;
 }
 
 function validId(v: unknown): v is string {
@@ -80,34 +76,37 @@ export async function lookupQuote(tickerInput: string): Promise<ActionResult<Quo
 // Compra
 // ---------------------------------------------------------------------------
 
-export type BuyInput = { ticker: string; quantity: number; buyDate: string; buyPrice: number };
+/**
+ * Compra imediata: só no horário do pregão, data sempre hoje e quantidade sempre
+ * SHARES_PER_TICKER (100). A carteira tem no máximo 10 papéis, um de cada.
+ */
+export type BuyInput = { ticker: string; buyPrice: number };
 
 export async function buyPosition(input: BuyInput): Promise<ActionResult<{ id: string }>> {
   try {
     const user = await requireAdmin();
+    const market = marketStatus();
+    if (!market.open) {
+      return fail(`${market.label}. Use "Agendar compra" para definir o preço e comprar no próximo pregão.`);
+    }
     const ticker = normalizeTicker(input?.ticker);
     if (!ticker) return fail("Ticker inválido (use, por exemplo, PETR4).");
-    if (!validQty(input.quantity)) return fail("Quantidade deve ser um número inteiro entre 1 e 100.");
-    if (!isIsoDate(input.buyDate)) return fail("Data de compra inválida.");
-    if (input.buyDate > todaySP()) return fail("A data de compra não pode ser no futuro.");
     if (!validPrice(input.buyPrice)) return fail("Preço de compra inválido.");
+    const quantity = SHARES_PER_TICKER;
+    const buyDate = todaySP();
 
     const supabase = await createClient();
 
-    const open = await getOpenShares(supabase);
-    if (open + input.quantity > PORTFOLIO_LIMIT) {
-      return fail(
-        `Limite de ${PORTFOLIO_LIMIT} ações abertas: a carteira já tem ${open}, então você pode comprar no máximo ${Math.max(0, PORTFOLIO_LIMIT - open)}.`,
-      );
-    }
+    const slotError = await checkTickerSlot(supabase, ticker);
+    if (slotError) return fail(slotError);
 
     // a) insere a posição (o banco valida o limite de novo e debita o caixa)
     const { data: inserted, error } = await supabase
       .from("positions")
       .insert({
         ticker,
-        quantity: input.quantity,
-        buy_date: input.buyDate,
+        quantity,
+        buy_date: buyDate,
         buy_price: input.buyPrice,
         created_by: user.id,
       })
@@ -117,43 +116,7 @@ export async function buyPosition(input: BuyInput): Promise<ActionResult<{ id: s
     const id = inserted.id;
 
     // b) print, c) histórico e d) cotação atual. Falhas não desfazem a compra.
-    const warnings: string[] = [];
-    const [shot, quotes] = await Promise.allSettled([
-      (async () => {
-        const path = await captureFundamentusScreenshot(ticker, id, "buy");
-        const { error: upErr } = await supabase.from("positions").update({ buy_screenshot_path: path }).eq("id", id);
-        if (upErr) throw new Error(friendlyDbError(upErr));
-      })(),
-      (async () => {
-        // histórico primeiro, cotação atual depois (para não sobrescrever a variação do dia)
-        let historyError: string | null = null;
-        try {
-          await importInfomoneyHistory(ticker, addDays(input.buyDate, -HISTORY_DAYS_BEFORE_BUY));
-        } catch (e) {
-          historyError = errorMessage(e);
-        }
-        const current = await refreshCurrentQuotes(ticker);
-        return { historyError, currentErrors: current.errors };
-      })(),
-    ]);
-
-    if (shot.status === "rejected") {
-      console.error(`[compra ${ticker}] print falhou:`, shot.reason);
-      warnings.push(`Não foi possível tirar o print (${errorMessage(shot.reason)}). Use "Tirar print novamente".`);
-    }
-    if (quotes.status === "rejected") {
-      console.error(`[compra ${ticker}] cotações falharam:`, quotes.reason);
-      warnings.push(`Falha ao gravar cotações (${errorMessage(quotes.reason)}). Use "Reimportar histórico".`);
-    } else {
-      if (quotes.value.historyError) {
-        console.error(`[compra ${ticker}] histórico falhou:`, quotes.value.historyError);
-        warnings.push(`Histórico do InfoMoney não importado (${quotes.value.historyError}). Use "Reimportar histórico".`);
-      }
-      if (quotes.value.currentErrors.length) {
-        console.error(`[compra ${ticker}] cotação atual:`, quotes.value.currentErrors);
-        warnings.push(`Cotação atual parcial: ${quotes.value.currentErrors.join("; ")}`);
-      }
-    }
+    const warnings = await runBuyFollowups(supabase, ticker, id, buyDate);
 
     try {
       const balance = await getCashBalance(supabase);
@@ -163,7 +126,7 @@ export async function buyPosition(input: BuyInput): Promise<ActionResult<{ id: s
     }
 
     refresh();
-    return { ok: true, data: { id }, message: `Compra de ${input.quantity} ${ticker} registrada.`, warnings };
+    return { ok: true, data: { id }, message: `Compra de ${quantity} ações de ${ticker} registrada.`, warnings };
   } catch (err) {
     return guard(err);
   }
@@ -229,12 +192,8 @@ export async function reopenPosition(id: string): Promise<ActionResult> {
     if (getErr || !pos) return fail(friendlyDbError(getErr));
     if (pos.status === "open") return fail("A posição já está aberta.");
 
-    const open = await getOpenShares(supabase);
-    if (open + pos.quantity > PORTFOLIO_LIMIT) {
-      return fail(
-        `Reabrir ultrapassaria o limite de ${PORTFOLIO_LIMIT} ações abertas (abertas: ${open}, esta posição: ${pos.quantity}).`,
-      );
-    }
+    const slotError = await checkTickerSlot(supabase, pos.ticker, { excludePositionId: pos.id });
+    if (slotError) return fail(`Não dá para reabrir: ${slotError}`);
 
     const { error } = await supabase
       .from("positions")
@@ -250,9 +209,9 @@ export async function reopenPosition(id: string): Promise<ActionResult> {
   }
 }
 
+/** A quantidade não é editável: cada papel tem sempre 100 ações (SHARES_PER_TICKER). */
 export type UpdateInput = {
   id: string;
-  quantity: number;
   buyDate: string;
   buyPrice: number;
   sellDate?: string | null;
@@ -263,7 +222,6 @@ export async function updatePosition(input: UpdateInput): Promise<ActionResult> 
   try {
     await requireAdmin();
     if (!validId(input?.id)) return fail("Posição inválida.");
-    if (!validQty(input.quantity)) return fail("Quantidade deve ser um número inteiro entre 1 e 100.");
     if (!isIsoDate(input.buyDate)) return fail("Data de compra inválida.");
     if (input.buyDate > todaySP()) return fail("A data de compra não pode ser no futuro.");
     if (!validPrice(input.buyPrice)) return fail("Preço de compra inválido.");
@@ -277,12 +235,11 @@ export async function updatePosition(input: UpdateInput): Promise<ActionResult> 
     if (getErr || !pos) return fail(friendlyDbError(getErr));
 
     const patch: {
-      quantity: number;
       buy_date: string;
       buy_price: number;
       sell_date?: string;
       sell_price?: number;
-    } = { quantity: input.quantity, buy_date: input.buyDate, buy_price: input.buyPrice };
+    } = { buy_date: input.buyDate, buy_price: input.buyPrice };
 
     if (pos.status === "closed") {
       if (!input.sellDate || !isIsoDate(input.sellDate)) return fail("Data de venda inválida.");
@@ -290,13 +247,6 @@ export async function updatePosition(input: UpdateInput): Promise<ActionResult> 
       if (input.sellDate < input.buyDate) return fail("A data de venda não pode ser anterior à data de compra.");
       patch.sell_date = input.sellDate;
       patch.sell_price = input.sellPrice;
-    } else {
-      const open = await getOpenShares(supabase, pos.id);
-      if (open + input.quantity > PORTFOLIO_LIMIT) {
-        return fail(
-          `Limite de ${PORTFOLIO_LIMIT} ações abertas: as outras posições somam ${open}, então esta pode ter no máximo ${Math.max(0, PORTFOLIO_LIMIT - open)}.`,
-        );
-      }
     }
 
     const { error } = await supabase.from("positions").update(patch).eq("id", pos.id);

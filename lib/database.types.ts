@@ -6,6 +6,7 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type PositionStatus = "open" | "closed";
 export type CashKind = "deposit" | "withdraw" | "adjust" | "buy" | "sell";
 export type QuoteSource = "fundamentus" | "infomoney";
+export type OrderStatus = "pending" | "executing" | "executed" | "cancelled" | "expired" | "failed";
 
 export type Database = {
   __InternalSupabase: {
@@ -165,6 +166,57 @@ export type Database = {
         };
         Relationships: [];
       };
+      scheduled_orders: {
+        Row: {
+          id: string;
+          ticker: string;
+          quantity: number;
+          limit_price: number;
+          valid_until: string | null;
+          status: OrderStatus;
+          position_id: string | null;
+          executed_price: number | null;
+          executed_at: string | null;
+          last_checked_at: string | null;
+          last_check_price: number | null;
+          error: string | null;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          ticker: string;
+          quantity: number;
+          limit_price: number;
+          valid_until?: string | null;
+          status?: OrderStatus;
+          position_id?: string | null;
+          executed_price?: number | null;
+          executed_at?: string | null;
+          last_checked_at?: string | null;
+          last_check_price?: number | null;
+          error?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          ticker?: string;
+          quantity?: number;
+          limit_price?: number;
+          valid_until?: string | null;
+          status?: OrderStatus;
+          position_id?: string | null;
+          executed_price?: number | null;
+          executed_at?: string | null;
+          last_checked_at?: string | null;
+          last_check_price?: number | null;
+          error?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: {
       cash_balance: {
@@ -194,3 +246,4 @@ export type Profile = Tables<"profiles">;
 export type Position = Tables<"positions">;
 export type CashMovement = Tables<"cash_movements">;
 export type Quote = Tables<"quotes">;
+export type ScheduledOrder = Tables<"scheduled_orders">;

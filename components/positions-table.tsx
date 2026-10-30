@@ -13,16 +13,12 @@ export function PositionsTable({
   positions,
   isAdmin,
   today,
-  openShares,
-  limit,
   showFilter = true,
   initialFilter = "open",
 }: {
   positions: PositionView[];
   isAdmin: boolean;
   today: string;
-  openShares: number;
-  limit: number;
   showFilter?: boolean;
   initialFilter?: Filter;
 }) {
@@ -100,7 +96,6 @@ export function PositionsTable({
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
               {rows.map((p) => {
-                const maxQtyForEdit = p.status === "open" ? limit - (openShares - p.quantity) : limit;
                 return (
                   <tr
                     key={p.id}
@@ -172,7 +167,7 @@ export function PositionsTable({
                       <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                         <div className="flex justify-end gap-1.5">
                           {p.status === "open" ? <ClosePositionButton position={p} today={today} /> : null}
-                          <ManagePositionButton position={p} today={today} maxQtyForEdit={Math.max(1, maxQtyForEdit)} />
+                          <ManagePositionButton position={p} today={today} />
                         </div>
                       </td>
                     ) : null}

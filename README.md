@@ -13,19 +13,22 @@ App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os
 | Rota | O que faz |
 | --- | --- |
 | `/login` | Login com e-mail e senha. Não existe cadastro. |
-| `/` | Cards (caixa, investido, valor de mercado, resultado, ações abertas X/100), formulário de compra (admin), tabela com filtro abertas/fechadas/todas, prints e ações de admin. |
+| `/` | Cards (caixa, investido, valor de mercado, resultado, papéis na carteira X/10), formulário de compra (admin), tabela com filtro abertas/fechadas/todas, prints e ações de admin. |
 | `/papel/[ticker]` | Candles do InfoMoney com volume, linhas tracejadas nos preços de compra/venda, marcadores nas datas, indicadores do Fundamentus e as posições com os prints em miniatura. |
 | `/caixa` | Movimentações com saldo acumulado. O admin lança aporte, retirada e ajuste, e exclui lançamentos manuais. |
 | `/usuarios` | (admin) Promover ou rebaixar administradores. O último admin não pode ser removido. |
 | `/definir-senha` | Definir senha depois de aceitar o convite. |
 | `/api/export` | Baixa a planilha (abas "Carteira" e "Caixa"; links dos prints valem 7 dias). Exige login. |
 | `/api/cron/scrape` | Cron diário que atualiza as cotações dos papéis em aberto. Exige `Authorization: Bearer CRON_SECRET`. |
+| `/api/cron/orders` | Executa as compras agendadas cujo preço foi atingido (3x por dia útil, dentro do pregão). Exige `Authorization: Bearer CRON_SECRET`. |
 | `/auth/confirm` | Destino dos links de convite e de recuperação de senha. |
 
 ### Regras principais
 
-- **Limite de 100 ações abertas** no total. O formulário limita a quantidade e o banco também barra (trigger `enforce_portfolio_limit`); o erro é traduzido para uma mensagem amigável.
+- **Carteira de 10 papéis × 100 ações**: são escolhidos até 10 papéis, e cada compra é automaticamente de **100 ações** daquele papel. A quantidade não é digitada nem editada. Cada papel tem no máximo uma posição aberta: depois de fechar, ele pode voltar. Papéis com compra agendada ocupam vaga. O formulário mostra as vagas livres e o banco também barra (trigger `enforce_portfolio_limit`, redefinido na migration `0003`); o erro é traduzido para uma mensagem amigável.
 - **Caixa**: o saldo é a view `cash_balance`. Compras debitam e vendas creditam automaticamente (trigger `sync_position_cash`). Uma compra que deixa o saldo negativo é permitida, com aviso.
+- **Horário do pregão**: a compra imediata só é aceita de segunda a sexta, das 10:00 às 17:00 (Brasília). A data da compra é sempre a de hoje. O servidor recusa fora desse horário, mesmo que alguém chame a action direto. O horário pode ser ajustado com as envs `MARKET_OPEN` e `MARKET_CLOSE` (`HH:MM`), porque a B3 muda o horário em alguns períodos do ano.
+- **Compra agendada (preço-limite)**: fora do pregão, ou se preferir, o admin informa ticker, quantidade, **preço desejado** e, opcionalmente, a validade, e agenda. Dentro do pregão, o cron `/api/cron/orders` (ou o botão **Verificar agora**) busca a cotação; se ela estiver **no preço desejado ou abaixo** e for **de hoje**, a compra é registrada pela cotação do momento, com print e histórico como numa compra normal. Se estiver acima, a ordem continua aguardando. Ordens vencidas viram "Vencida". Um papel agendado ocupa uma das 10 vagas, e a ordem também é de 100 ações. O admin pode cancelar ordens pendentes.
 - **Compra**: insere a posição e depois, em paralelo, (b) tira o print do Fundamentus e sobe para `screenshots/<TICKER>/<id>-buy-<timestamp>.png`, (c) importa o histórico do InfoMoney desde a data da compra menos 180 dias e (d) grava a cotação atual das duas fontes. Se b, c ou d falharem, a compra continua valendo e o erro aparece na tela; em **Gerenciar** há "Tirar print novamente" e "Reimportar histórico".
 - **Fechar posição**: busca a cotação atual (Fundamentus, com fallback para o InfoMoney) para pré-preencher o preço, grava a venda e tira o print `-sell-`.
 - Todas as Server Actions conferem `profiles.is_admin` no servidor antes de agir, sem depender só do RLS. O upload de prints e a escrita em `quotes` usam service role, sempre depois dessa checagem (ou do `CRON_SECRET`, no caso do cron).
@@ -35,7 +38,7 @@ App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os
 ### 1. Supabase
 
 1. Crie um projeto em <https://supabase.com>.
-2. Abra **SQL Editor**, cole o conteúdo de `supabase/migrations/0001_init.sql` e rode. Isso cria as tabelas, as views, os triggers, o RLS e o bucket privado `screenshots`.
+2. Abra **SQL Editor**, cole o conteúdo de `supabase/migrations/0001_init.sql` e rode. Isso cria as tabelas, as views, os triggers, o RLS e o bucket privado `screenshots`. Depois rode `supabase/migrations/0002_scheduled_orders.sql`, que cria as compras agendadas, e `supabase/migrations/0003_ten_tickers.sql`, que troca o limite antigo de 100 ações no total pela regra de 10 papéis × 100 ações.
    - O e-mail `tiagopaz.jna@gmail.com` vira admin automaticamente. Para usar outro admin inicial, troque o e-mail na migration **antes** de rodar, ou depois rode `update public.profiles set is_admin = true where email = '...'`.
 3. Em **Authentication → Sign In / Providers** (ou **Auth → Settings**), **desligue "Allow new users to sign up"**. Assim só entra quem for convidado.
 4. Em **Authentication → URL Configuration**, defina o **Site URL**: a URL da Vercel em produção ou `http://localhost:3000` localmente. Adicione as duas em **Redirect URLs**.
@@ -57,6 +60,7 @@ Copie `.env.example` para `.env.local` e preencha:
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Project Settings → API → `anon` / publishable key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Project Settings → API → `service_role` / secret key. **Nunca** exponha no cliente. |
 | `CRON_SECRET` | Uma string aleatória longa, por exemplo `openssl rand -hex 32` |
+| `MARKET_OPEN` / `MARKET_CLOSE` | Opcional. Horário do pregão em Brasília, padrão `10:00` / `17:00`. |
 | `CHROME_EXECUTABLE_PATH` | Só local: caminho do Chrome, por exemplo `C:\Program Files\Google\Chrome\Application\chrome.exe` ou `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` |
 
 As variáveis são lidas em tempo de request, então o `npm run build` funciona sem elas.
@@ -91,7 +95,11 @@ npx tsx --conditions=react-server scripts/test-screenshot.ts PETR4 ./tmp
 1. Importe o repositório na Vercel (framework Next.js).
 2. Em **Settings → Environment Variables**, cadastre `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` e `CRON_SECRET`. **Não** defina `CHROME_EXECUTABLE_PATH` na Vercel: lá o app usa `@sparticuz/chromium`.
 3. Use **Node.js 22 ou superior** (Settings → General → Node.js Version), exigido pelo `@sparticuz/chromium` 153.
-4. Faça o deploy. O `vercel.json` registra o cron `30 21 * * 1-5`, que corresponde a 18h30 de Brasília (UTC−3) de segunda a sexta. A Vercel envia `Authorization: Bearer <CRON_SECRET>` automaticamente quando a variável `CRON_SECRET` existe.
+4. Faça o deploy. O `vercel.json` registra os crons (horários em UTC; Brasília = UTC−3):
+   - `/api/cron/scrape`: `30 21 * * 1-5`, 18h30 de Brasília em dias úteis.
+   - `/api/cron/orders`: `30 13`, `0 16` e `15 19` em dias úteis, ou seja, cerca de 10h30, 13h00 e 16h15 de Brasília, dentro do pregão.
+
+    A Vercel envia `Authorization: Bearer <CRON_SECRET>` automaticamente quando a variável `CRON_SECRET` existe.
 5. Atualize o **Site URL** do Supabase para a URL de produção.
 
 Configuração relevante já incluída:
@@ -110,6 +118,12 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/s
 
 A resposta é um JSON com `ok`, `tickers`, `saved` e `results[TICKER][fundamentus|infomoney]` (`ok` com o preço, ou o `error`). Sem o header, a rota responde 401.
 
+Compras agendadas (fora do pregão responde `ran: false` com o motivo):
+
+```bash
+curl -i -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/orders
+```
+
 ## Estrutura
 
 ```
@@ -124,13 +138,17 @@ lib/database.types.ts         tipos das tabelas (escritos à mão a partir do SQ
 lib/portfolio.ts              carga e cálculos da carteira
 lib/quotes.ts                 upsert de cotações, histórico e upload de prints
 lib/screenshot.ts             Puppeteer (server-only)
+lib/market-hours.ts           horário do pregão
+lib/scheduled-orders.ts       execução das compras agendadas
 lib/scrapers/*                scrapers do Fundamentus e do InfoMoney
-supabase/migrations/0001_init.sql
+supabase/migrations/0001_init.sql, 0002_scheduled_orders.sql, 0003_ten_tickers.sql
 ```
 
 ## Limitações
 
-- **Plano Hobby da Vercel**: o cron roda no máximo 1 vez por dia, e a Vercel pode disparar em qualquer momento dentro da hora agendada. Para cotações intradiárias seria preciso o plano Pro ou um agendador externo chamando a rota com o `CRON_SECRET`.
+- **Plano Hobby da Vercel**: cada cron roda no máximo 1 vez por dia (por isso as ordens usam 3 entradas separadas no `vercel.json`), e a Vercel pode disparar em qualquer momento dentro da hora agendada. Para cotações intradiárias seria preciso o plano Pro ou um agendador externo chamando a rota com o `CRON_SECRET`.
+- **Compras agendadas no plano Hobby**: cada cron dispara em algum momento dentro da hora agendada, então a verificação não é em tempo real. Se o preço tocar o limite e voltar entre duas verificações, a ordem não executa. Use **Verificar agora** para checar na hora. A cotação do Fundamentus tem atraso, e a compra é registrada por essa cotação, não por um preço de corretora.
+- **Feriados da B3** não estão no calendário. Nesses dias, a execução agendada não compra porque exige uma cotação com a data de hoje; já a compra imediata não é bloqueada em feriado.
 - **O print registra o momento do cadastro**, não a data de compra informada. Se você lança hoje uma compra feita semana passada, o print mostra a página do Fundamentus de hoje. O mesmo vale para "Tirar print novamente".
 - Fundamentus e InfoMoney publicam cotações com atraso e podem mudar o HTML ou a API sem aviso. Nesse caso os scrapers falham e o app mostra o erro; a compra ou venda continua sendo registrada.
 - A "cotação atual" é a cotação mais recente gravada no banco (atualizada pelo cron, por uma compra ou por "buscar cotação"). Se as duas fontes têm cotação do mesmo dia, vale a do InfoMoney.

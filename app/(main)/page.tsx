@@ -5,7 +5,10 @@ import { PositionsTable } from "@/components/positions-table";
 import { SummaryCards } from "@/components/summary-cards";
 import { requireUser } from "@/lib/auth";
 import { todaySP } from "@/lib/dates";
-import { loadPortfolio, type PortfolioData } from "@/lib/portfolio";
+import { Alert } from "@/components/modal";
+import { ScheduledOrders } from "@/components/scheduled-orders";
+import { marketStatus } from "@/lib/market-hours";
+import { loadPortfolio, loadScheduledOrders, type PortfolioData } from "@/lib/portfolio";
 import { createClient } from "@/lib/supabase/server";
 
 // As Server Actions desta página tiram prints (Chromium): precisam de mais tempo.
@@ -34,27 +37,43 @@ async function Dashboard() {
   const user = await requireUser();
   const supabase = await createClient();
   let data: PortfolioData;
+  let orders: Awaited<ReturnType<typeof loadScheduledOrders>>;
   try {
-    data = await loadPortfolio(supabase);
+    [data, orders] = await Promise.all([loadPortfolio(supabase), loadScheduledOrders(supabase)]);
   } catch (err) {
     return <ErrorBlock error={err} />;
   }
   const today = todaySP();
+  const market = marketStatus();
   const { summary, positions } = data;
+  const openTickers = positions.filter((p) => p.status === "open").map((p) => p.ticker);
+  const pendingTickers = (orders ?? [])
+    .filter((o) => o.status === "pending" || o.status === "executing")
+    .map((o) => o.ticker);
+  const takenTickers = [...new Set([...openTickers, ...pendingTickers])];
 
   return (
     <div className="space-y-6">
       <SummaryCards summary={summary} />
       {user.isAdmin ? (
-        <BuyForm maxQty={summary.limit - summary.openShares} cashBalance={summary.cashBalance} today={today} />
+        <BuyForm
+          slotsAvailable={summary.maxTickers - takenTickers.length}
+          maxTickers={summary.maxTickers}
+          takenTickers={takenTickers}
+          cashBalance={summary.cashBalance}
+          today={today}
+          marketOpen={market.open}
+          marketLabel={market.label}
+        />
       ) : null}
-      <PositionsTable
-        positions={positions}
-        isAdmin={user.isAdmin}
-        today={today}
-        openShares={summary.openShares}
-        limit={summary.limit}
-      />
+      {orders === null && user.isAdmin ? (
+        <Alert kind="warning">
+          Compras agendadas indisponíveis: rode <code>supabase/migrations/0002_scheduled_orders.sql</code> no SQL
+          Editor do Supabase.
+        </Alert>
+      ) : null}
+      {orders?.length ? <ScheduledOrders orders={orders} isAdmin={user.isAdmin} marketOpen={market.open} /> : null}
+      <PositionsTable positions={positions} isAdmin={user.isAdmin} today={today} />
     </div>
   );
 }
