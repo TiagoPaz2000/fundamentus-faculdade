@@ -40,7 +40,7 @@ create table if not exists public.positions (
   id uuid primary key default gen_random_uuid(),
   created_by uuid references auth.users(id) on delete set null default auth.uid(),
   ticker text not null check (ticker = upper(ticker)),
-  quantity numeric not null default 1 check (quantity > 0),
+  quantity integer not null default 1 check (quantity between 1 and 100),
   buy_date date not null,
   buy_price numeric(14,4) not null check (buy_price > 0),
   buy_screenshot_path text,            -- caminho no bucket "screenshots"
@@ -53,6 +53,31 @@ create table if not exists public.positions (
   check (status = 'open' or (sell_date is not null and sell_price is not null))
 );
 create index if not exists positions_ticker_idx on public.positions(ticker);
+
+-- Limite da carteira: no máximo 100 ações abertas no total (somando todos os papéis)
+create or replace function public.enforce_portfolio_limit() returns trigger
+language plpgsql as $$
+declare
+  open_total integer;
+begin
+  if new.status <> 'open' then
+    return new;
+  end if;
+  perform pg_advisory_xact_lock(hashtext('portfolio_limit'));
+  select coalesce(sum(quantity), 0) into open_total
+    from public.positions
+   where status = 'open' and id <> new.id;
+  if open_total + new.quantity > 100 then
+    raise exception 'Limite da carteira: % ações abertas + % excede 100 (disponível: %)',
+      open_total, new.quantity, 100 - open_total
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists positions_portfolio_limit on public.positions;
+create trigger positions_portfolio_limit before insert or update on public.positions
+  for each row execute function public.enforce_portfolio_limit();
 
 -- ---------- Caixa ("valor disponível") ----------
 -- Saldo = soma de amount. Compras/vendas geram movimentos automaticamente.
