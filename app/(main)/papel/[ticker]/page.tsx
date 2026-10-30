@@ -13,6 +13,7 @@ import { MAX_TICKERS } from "@/lib/errors";
 import { formatBRL, formatDate, formatInt, formatNumber, formatPct, signClass } from "@/lib/format";
 import { fetchAll, getOpenTickers, loadPortfolio } from "@/lib/portfolio";
 import { normalizeTicker } from "@/lib/quotes";
+import { loadMemberNames, memberLabel, type MemberNames } from "@/lib/member-names";
 import { createClient } from "@/lib/supabase/server";
 
 export const maxDuration = 60;
@@ -53,8 +54,9 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
   let fundamentus: Pick<Quote, "quote_date" | "price" | "change_pct" | "raw"> | null;
   let portfolio: Awaited<ReturnType<typeof loadPortfolio>>;
   let openTickers: string[];
+  let names: MemberNames;
   try {
-    [quotes, fundamentus, portfolio, openTickers] = await Promise.all([
+    [quotes, fundamentus, portfolio, openTickers, names] = await Promise.all([
       fetchAll<Pick<Quote, "quote_date" | "open" | "high" | "low" | "price" | "volume">>((from, to) =>
         supabase
           .from("quotes")
@@ -75,12 +77,14 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
         .then(({ data }) => data),
       loadPortfolio(supabase, { ticker }),
       getOpenTickers(supabase),
+      loadMemberNames(supabase),
     ]);
   } catch (err) {
     return <ErrorBlock error={err} />;
   }
 
   const positions = portfolio.positions;
+  const memberNames = names;
   const current = positions[0]?.current ?? null;
 
   const candles: Candle[] = quotes.map((q) => {
@@ -196,10 +200,17 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
                       {p.status === "open" ? "Aberta" : "Fechada"}
                     </span>
                   </div>
-                  <div className="text-zinc-500">Compra em {formatDate(p.buy_date)}</div>
+                  <div className="text-zinc-500">
+                    Compra em {formatDate(p.buy_date)} por{" "}
+                    <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                      {memberLabel(p.created_by, memberNames)}
+                      {p.created_by === user.id ? " (você)" : ""}
+                    </span>
+                  </div>
                   {p.status === "closed" ? (
                     <div className="text-zinc-500">
-                      Venda em {formatDate(p.sell_date)} a {formatBRL(p.sell_price)}
+                      Venda em {formatDate(p.sell_date)} a {formatBRL(p.sell_price)} por{" "}
+                      <span className="font-medium text-zinc-700 dark:text-zinc-300">{memberLabel(p.closed_by, memberNames)}</span>
                     </div>
                   ) : null}
                   <div className={signClass(p.varBRL)}>
@@ -234,6 +245,8 @@ async function PapelContent({ params }: { params: Promise<{ ticker: string }> })
             today={todaySP()}
             initialFilter="all"
             showFilter={false}
+            currentUserId={user.id}
+            memberNames={memberNames}
           />
         ) : null}
       </section>

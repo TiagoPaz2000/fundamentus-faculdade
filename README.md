@@ -1,9 +1,11 @@
 # Carteira da Turma
 
-App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os usuários convidados veem os mesmos dados; só administradores compram, vendem, editam, mexem no caixa e gerenciam usuários.
+App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os **membros** veem os mesmos dados; só administradores compram, vendem, editam, mexem no caixa e gerenciam membros.
+
+> **Projeto Supabase compartilhado.** Este app usa o mesmo projeto Supabase de outro app (blender-ai). O login (`auth.users`) é comum aos dois, então ter conta não dá acesso à carteira: só entra quem é **membro** (tem linha em `public.profiles`). As tabelas da carteira (`profiles`, `positions`, `cash_movements`, `quotes`, `scheduled_orders`) não colidem com as do outro app (`perfis`, `pontes`, `fila`…). Os templates de e-mail e as configurações de Auth também são compartilhados: este app **não envia e-mails** e não depende deles.
 
 - Next.js 16 (App Router, Cache Components, `proxy.ts`), TypeScript e Tailwind v4
-- Supabase: Auth (e-mail e senha, só convidados), Postgres com RLS e Storage (bucket privado `screenshots`)
+- Supabase: Auth (e-mail e senha), acesso só para membros, Postgres com RLS e Storage (bucket privado `screenshots`)
 - Cotações: Fundamentus (cotação e indicadores) e InfoMoney (cotação e histórico OHLC para os candles)
 - Prints da página do Fundamentus com Puppeteer (`@sparticuz/chromium` na Vercel, Chrome local em desenvolvimento)
 - Planilha `.xlsx` com ExcelJS e gráfico de candles com lightweight-charts v5
@@ -13,12 +15,13 @@ App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os
 | Rota | O que faz |
 | --- | --- |
 | `/login` | Login com e-mail e senha. Não existe cadastro. |
+| `/sem-acesso` | Aparece para quem está logado mas não é membro (ex.: conta do outro app): mostra o e-mail e o botão de sair. |
 | `/` | Cards (caixa, investido, valor de mercado, resultado, papéis na carteira X/10), formulário de compra (admin), tabela com filtro abertas/fechadas/todas, prints e ações de admin. |
 | `/papel/[ticker]` | Candles do InfoMoney com volume, linhas tracejadas nos preços de compra/venda, marcadores nas datas, indicadores do Fundamentus e as posições com os prints em miniatura. |
 | `/caixa` | Movimentações com saldo acumulado. O admin lança aporte, retirada e ajuste, e exclui lançamentos manuais. |
-| `/usuarios` | (admin) Promover ou rebaixar administradores. O último admin não pode ser removido. |
+| `/usuarios` | (admin) Membros: adicionar por e-mail, gerar link de convite/senha, remover, promover/rebaixar admin. O último admin não pode ser removido nem rebaixado. |
 | `/definir-senha` | Definir senha depois de aceitar o convite. |
-| `/api/export` | Baixa a planilha (abas "Carteira" e "Caixa"; links dos prints valem 7 dias). Exige login. |
+| `/api/export` | Baixa a planilha (abas "Carteira" e "Caixa"; links dos prints valem 7 dias). Exige ser membro. |
 | `/api/cron/scrape` | Cron diário que atualiza as cotações dos papéis em aberto. Exige `Authorization: Bearer CRON_SECRET`. |
 | `/api/cron/orders` | Executa as compras agendadas cujo preço foi atingido (3x por dia útil, dentro do pregão). Exige `Authorization: Bearer CRON_SECRET`. |
 | `/auth/confirm` | Destino dos links de convite e de recuperação de senha. |
@@ -32,24 +35,31 @@ App da faculdade para acompanhar uma carteira de ações compartilhada. Todos os
 - **Tela de compra** (pensada para celular): digite o papel ou o nome da empresa no campo de busca (lista de ~1000 papéis do Fundamentus, em cache por 1 dia via `/api/tickers`) e escolha. Aparecem as **100 ações**, o **valor atual** e o total. Ao clicar em **Comprar**, o servidor busca a cotação de novo naquele instante e registra a compra por ela (o preço não é digitado), depois tira o print. Papéis sem negociação recente (cotação com mais de 7 dias) não podem ser comprados nem agendados.
 - **Compra**: insere a posição e depois, em paralelo, (b) tira o print do Fundamentus e sobe para `screenshots/<TICKER>/<id>-buy-<timestamp>.png`, (c) importa o histórico do InfoMoney desde a data da compra menos 180 dias e (d) grava a cotação atual das duas fontes. Se b, c ou d falharem, a compra continua valendo e o erro aparece na tela; em **Gerenciar** há "Tirar print novamente" e "Reimportar histórico".
 - **Fechar posição**: busca a cotação atual (Fundamentus, com fallback para o InfoMoney) para pré-preencher o preço, grava a venda e tira o print `-sell-`.
+- **Membros**: páginas, Server Actions, `/api/export` e `/api/tickers` exigem que o usuário logado tenha perfil em `profiles`; o RLS (migration `0004`) também só deixa membros lerem os dados. Os crons usam service role e não dependem de login.
 - Todas as Server Actions conferem `profiles.is_admin` no servidor antes de agir, sem depender só do RLS. O upload de prints e a escrita em `quotes` usam service role, sempre depois dessa checagem (ou do `CRON_SECRET`, no caso do cron).
 
 ## Setup
 
 ### 1. Supabase
 
-1. Crie um projeto em <https://supabase.com>.
-2. Abra **SQL Editor**, cole o conteúdo de `supabase/migrations/0001_init.sql` e rode. Isso cria as tabelas, as views, os triggers, o RLS e o bucket privado `screenshots`. Depois rode `supabase/migrations/0002_scheduled_orders.sql`, que cria as compras agendadas, e `supabase/migrations/0003_ten_tickers.sql`, que troca o limite antigo de 100 ações no total pela regra de 10 papéis × 100 ações.
-   - O e-mail `tiagopaz.jna@gmail.com` vira admin automaticamente. Para usar outro admin inicial, troque o e-mail na migration **antes** de rodar, ou depois rode `update public.profiles set is_admin = true where email = '...'`.
-3. Em **Authentication → Sign In / Providers** (ou **Auth → Settings**), **desligue "Allow new users to sign up"**. Assim só entra quem for convidado.
-4. Em **Authentication → URL Configuration**, defina o **Site URL**: a URL da Vercel em produção ou `http://localhost:3000` localmente. Adicione as duas em **Redirect URLs**.
-5. Em **Authentication → Email Templates**:
-   - **Invite user**: troque o link para
-     `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite&next=/definir-senha`
-   - **Reset password** (opcional): use
-     `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/definir-senha`
-6. Para convidar alguém: **Authentication → Users → Invite user**. A pessoa recebe o e-mail, clica no link, define a senha em `/definir-senha` e já entra. Outra opção é **Add user → Create new user**, com senha e "Auto Confirm User" marcado.
-7. Para promover outros admins, use a tela `/usuarios`.
+1. Use o projeto Supabase **já existente** do blender-ai (ou crie um novo em <https://supabase.com>).
+2. No **SQL Editor**, rode as migrations em ordem: `0001_init.sql`, `0002_scheduled_orders.sql`, `0003_ten_tickers.sql`, `0004_membros.sql` e `0005_compras_por_usuario.sql` (pasta `supabase/migrations`).
+   - `0001`: tabelas, views, triggers, RLS e o bucket privado `screenshots`.
+   - `0002`: compras agendadas.
+   - `0003`: regra de 10 papéis × 100 ações.
+   - `0004`: modelo de membros para coexistir com o outro app. Remove o trigger que criava perfil para **todo** usuário novo, cria `is_member()`, faz as policies de leitura (tabelas e prints) exigirem membro e impede apagar o último admin. Só o admin inicial (`tiagopaz.dev@gmail.com`) ganha perfil automaticamente. Na primeira execução, apaga os perfis que a `0001` criou para usuários do outro app (reexecutar não apaga membros novos); falha sem apagar nada se o admin inicial não existir em `auth.users`.
+   - `0005`: cada membro compra/agenda os próprios papéis, no máximo **2 abertos ou agendados por usuário** (vender libera a vaga). Cria `profiles.name` (parte do email antes do @). Compra e cancelamento de membros passam pelo servidor (service role); pelo RLS só admin escreve em `positions`.
+3. **Não** desligue o cadastro público nem edite os templates de e-mail: essas configurações são do projeto inteiro e o outro app depende delas. A carteira não precisa disso, porque o acesso é controlado pela lista de membros.
+4. Em **Authentication → URL Configuration**, adicione a URL da carteira (Vercel e `http://localhost:3000`) em **Redirect URLs**. Não troque o **Site URL** se ele for do outro app.
+
+#### Membros e convites
+
+- **Membro** = usuário do auth com linha em `public.profiles`. Quem está logado sem perfil vê "Você não tem acesso a esta carteira".
+- Em `/usuarios`, o admin digita um e-mail em **Adicionar membro**:
+  - **E-mail que já tem conta** (por exemplo, usuário do outro app): só é criado o perfil. A pessoa entra com a senha que já usa.
+  - **E-mail novo**: o servidor cria o usuário com `auth.admin.generateLink({ type: "invite" })`, **sem enviar e-mail**, cria o perfil e mostra um link `/auth/confirm?token_hash=…&type=invite` para copiar e mandar por WhatsApp ou outro canal. Ao abrir, a pessoa é autenticada e cai em `/definir-senha`.
+- O link expira no prazo de OTP do projeto (padrão do Supabase: 1 hora). Para reenviar, use **Gerar link de convite** no membro. Para quem esqueceu a senha, use **Gerar link de senha**. A senha vale também no outro app, porque a conta é a mesma.
+- **Remover** apaga só o perfil: a conta continua existindo, inclusive no outro app. Ninguém pode remover a si mesmo, e o último admin não pode ser removido (o banco também barra).
 
 ### 2. Variáveis de ambiente
 
@@ -142,7 +152,7 @@ lib/screenshot.ts             Puppeteer (server-only)
 lib/market-hours.ts           horário do pregão
 lib/scheduled-orders.ts       execução das compras agendadas
 lib/scrapers/*                scrapers do Fundamentus e do InfoMoney
-supabase/migrations/0001_init.sql, 0002_scheduled_orders.sql, 0003_ten_tickers.sql
+supabase/migrations/0001_init.sql … 0005_compras_por_usuario.sql
 ```
 
 ## Limitações

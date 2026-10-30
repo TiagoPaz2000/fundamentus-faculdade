@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import { getCurrentUserOrNull } from "@/lib/auth";
 import { todaySP } from "@/lib/dates";
 import { loadCashMovements, loadPortfolio } from "@/lib/portfolio";
+import { loadMemberNames, memberLabel, type MemberNames } from "@/lib/member-names";
 import { createClient } from "@/lib/supabase/server";
 
 export const maxDuration = 30;
@@ -43,14 +44,19 @@ export async function GET() {
   if (!user) {
     return Response.json({ error: "Não autenticado" }, { status: 401 });
   }
+  if (!user.isMember) {
+    return Response.json({ error: "Você não tem acesso a esta carteira." }, { status: 403 });
+  }
 
   const supabase = await createClient();
   let portfolio: Awaited<ReturnType<typeof loadPortfolio>>;
   let movements: Awaited<ReturnType<typeof loadCashMovements>>;
+  let names: MemberNames;
   try {
-    [portfolio, movements] = await Promise.all([
+    [portfolio, movements, names] = await Promise.all([
       loadPortfolio(supabase, { signedUrlSeconds: SEVEN_DAYS }),
       loadCashMovements(supabase),
+      loadMemberNames(supabase),
     ]);
   } catch (err) {
     return Response.json({ error: (err as Error).message }, { status: 500 });
@@ -64,6 +70,7 @@ export async function GET() {
   const ws = wb.addWorksheet("Carteira", { views: [{ state: "frozen", ySplit: 1 }] });
   ws.columns = [
     { header: "Papel", key: "ticker", width: 10 },
+    { header: "Comprado por", key: "buyer", width: 16 },
     { header: "Quantidade", key: "qty", width: 11 },
     { header: "Data compra", key: "buyDate", width: 12, style: { numFmt: DATE } },
     { header: "Preço compra (unit.)", key: "buyPrice", width: 18, style: { numFmt: BRL } },
@@ -77,6 +84,7 @@ export async function GET() {
     { header: "Status", key: "status", width: 10 },
     { header: "Preço venda", key: "sellPrice", width: 14, style: { numFmt: BRL } },
     { header: "Data venda", key: "sellDate", width: 12, style: { numFmt: DATE } },
+    { header: "Vendido por", key: "seller", width: 16 },
     { header: "Print compra", key: "buyShot", width: 14 },
     { header: "Print venda", key: "sellShot", width: 14 },
   ];
@@ -84,6 +92,7 @@ export async function GET() {
   for (const p of portfolio.positions) {
     ws.addRow({
       ticker: p.ticker,
+      buyer: memberLabel(p.created_by, names),
       qty: p.quantity,
       buyDate: excelDate(p.buy_date),
       buyPrice: p.buy_price,
@@ -97,6 +106,7 @@ export async function GET() {
       status: p.status === "open" ? "Aberta" : "Fechada",
       sellPrice: p.sell_price,
       sellDate: excelDate(p.sell_date),
+      seller: p.status === "closed" ? memberLabel(p.closed_by, names) : null,
       buyShot: link(p.buyScreenshotUrl, "abrir print"),
       sellShot: link(p.sellScreenshotUrl, "abrir print"),
     });

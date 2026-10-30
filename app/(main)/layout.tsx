@@ -1,7 +1,27 @@
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { Header, HeaderShell } from "@/components/header";
+import { NoAccess } from "@/components/no-access";
+import { getCurrentUserOrNull } from "@/lib/auth";
 
 export default function MainLayout({ children }: LayoutProps<"/">) {
+  return (
+    <Suspense fallback={<HeaderShell />}>
+      <MemberGate>{children}</MemberGate>
+    </Suspense>
+  );
+}
+
+/**
+ * O login é compartilhado com outro app: logado não basta, precisa ser membro
+ * (ter perfil em public.profiles). Quem não é vê a tela de "sem acesso" aqui
+ * mesmo, sem redirect (nada de loop), e as páginas nem chegam a renderizar.
+ */
+async function MemberGate({ children }: { children: React.ReactNode }) {
+  const user = await getCurrentUserOrNull();
+  if (!user) redirect("/login");
+  if (!user.isMember) return <NoAccess email={user.email} />;
+
   return (
     <>
       <Suspense fallback={<HeaderShell />}>

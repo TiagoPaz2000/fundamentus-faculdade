@@ -3,7 +3,7 @@
 import { refresh } from "next/cache";
 import type { ActionResult } from "@/lib/action-result";
 import { fail } from "@/lib/action-result";
-import { AuthError, requireAdmin } from "@/lib/auth";
+import { AuthError, requireAdmin, requireUser } from "@/lib/auth";
 import { MAX_QUOTE_AGE_DAYS, addDays, daysBetween, isIsoDate, todaySP } from "@/lib/dates";
 import { SHARES_PER_TICKER, errorMessage, friendlyDbError } from "@/lib/errors";
 import { formatBRL, formatDate } from "@/lib/format";
@@ -19,6 +19,7 @@ import {
   removeScreenshots,
   upsertQuotes,
 } from "@/lib/quotes";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 function guard(err: unknown): { ok: false; error: string } {
@@ -52,7 +53,7 @@ export type QuoteLookup = {
 
 export async function lookupQuote(tickerInput: string): Promise<ActionResult<QuoteLookup>> {
   try {
-    await requireAdmin();
+    await requireUser(); // qualquer membro consulta para comprar/agendar
     const ticker = normalizeTicker(tickerInput);
     if (!ticker) return fail("Ticker inválido.");
     let current: Awaited<ReturnType<typeof fetchCurrentQuote>>;
@@ -89,7 +90,9 @@ export async function lookupQuote(tickerInput: string): Promise<ActionResult<Quo
 /**
  * Compra imediata: só no horário do pregão, data sempre hoje, quantidade sempre
  * SHARES_PER_TICKER (100) e preço = cotação atual buscada AGORA no servidor
- * (Fundamentus, com fallback InfoMoney). A carteira tem no máximo 10 papéis.
+ * (Fundamentus, com fallback InfoMoney). A carteira tem no máximo 10 papéis e
+ * cada membro no máximo MAX_PER_USER (2) papéis abertos ou agendados.
+ * Qualquer membro compra, sempre em nome próprio (created_by = usuário logado).
  */
 export type BuyInput = { ticker: string };
 
@@ -97,7 +100,7 @@ export async function buyPosition(
   input: BuyInput,
 ): Promise<ActionResult<{ id: string; price: number; source: "fundamentus" | "infomoney" }>> {
   try {
-    const user = await requireAdmin();
+    const user = await requireUser();
     const market = marketStatus();
     if (!market.open) {
       return fail(`${market.label}. Use "Agendar compra" para definir o preço e comprar no próximo pregão.`);
@@ -109,7 +112,7 @@ export async function buyPosition(
 
     const supabase = await createClient();
 
-    const slotError = await checkTickerSlot(supabase, ticker);
+    const slotError = await checkTickerSlot(supabase, ticker, { userId: user.id });
     if (slotError) return fail(slotError);
 
     // Preço da compra = cotação atual, buscada no momento do clique.
@@ -128,8 +131,10 @@ export async function buyPosition(
       return fail(`Não foi possível obter a cotação atual de ${ticker}: ${errorMessage(e)}`);
     }
 
-    // a) insere a posição (o banco valida o limite de novo e debita o caixa)
-    const { data: inserted, error } = await supabase
+    // a) insere com service role: o preço/data vêm do servidor (cotação atual),
+    //    nunca do cliente, e o RLS só deixa admin inserir direto. created_by é
+    //    o usuário logado. O banco valida os limites de novo e debita o caixa.
+    const { data: inserted, error } = await createAdminClient()
       .from("positions")
       .insert({
         ticker,
@@ -144,7 +149,9 @@ export async function buyPosition(
     const id = inserted.id;
 
     // b) print, c) histórico e d) cotação atual. Falhas não desfazem a compra.
-    const warnings = await runBuyFollowups(supabase, ticker, id, buyDate);
+    // Gravar o caminho do print é UPDATE em positions, que o RLS só libera para
+    // admin: usa o service role (membro já validado; a posição acabou de ser criada por ele).
+    const warnings = await runBuyFollowups(createAdminClient(), ticker, id, buyDate);
 
     try {
       const balance = await getCashBalance(supabase);

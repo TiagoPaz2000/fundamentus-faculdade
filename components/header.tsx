@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { logout } from "@/app/actions/auth";
 import { requireUser } from "@/lib/auth";
+import { displayName } from "@/lib/names";
 import { NavLinks } from "./nav-links";
 
 function Brand() {
@@ -28,13 +29,23 @@ export function HeaderShell({ children }: { children?: React.ReactNode }) {
 /** Lê a sessão: renderize dentro de <Suspense>. */
 export async function Header() {
   const user = await requireUser();
+  const name = displayName(user.email, user.name);
   return (
     <HeaderShell>
       <NavLinks isAdmin={user.isAdmin} />
-      <div className="ml-auto flex items-center gap-3">
-        <div className="hidden text-right text-xs leading-tight md:block">
-          <div className="text-zinc-700 dark:text-zinc-200">{user.email}</div>
-          <div className="text-zinc-500">{user.isAdmin ? "Administrador" : "Visualização"}</div>
+      <div className="ml-auto flex min-w-0 items-center gap-3">
+        <div className="min-w-0 text-right text-xs leading-tight" title={user.email}>
+          <div className="flex items-center justify-end gap-1.5">
+            <span className="max-w-28 truncate text-sm font-medium text-zinc-800 sm:max-w-48 dark:text-zinc-100">
+              {name}
+            </span>
+            {user.isAdmin ? (
+              <span className="badge bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                admin
+              </span>
+            ) : null}
+          </div>
+          <div className="hidden truncate text-zinc-500 md:block">{user.email}</div>
         </div>
         <form action={logout}>
           <button type="submit" className="btn-secondary btn-xs">

@@ -1,7 +1,8 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CashMovement, Database, Position, Quote, ScheduledOrder } from "@/lib/database.types";
-import { MAX_TICKERS, SHARES_PER_TICKER, friendlyDbError } from "@/lib/errors";
+import { MAX_PER_USER, MAX_TICKERS, SHARES_PER_TICKER, USER_LIMIT_MESSAGE, friendlyDbError } from "@/lib/errors";
+import { displayName } from "@/lib/names";
 import { SCREENSHOT_BUCKET } from "@/lib/quotes";
 
 type Client = SupabaseClient<Database>;
@@ -23,7 +24,24 @@ export type PositionView = Position & {
   marketValue: number | null;
   buyScreenshotUrl: string | null;
   sellScreenshotUrl: string | null;
+  /** Quem comprou (nome do membro; "ex-membro" se saiu da carteira). */
+  buyerName: string;
 };
+
+/** id do usuário → nome de exibição, para todos os membros atuais. */
+export async function loadMemberNames(supabase: Client): Promise<Map<string, string>> {
+  // select("*"): funciona com ou sem a coluna profiles.name (0005).
+  const { data } = await supabase.from("profiles").select("*");
+  return new Map(
+    (data ?? []).map((p) => [p.id, displayName(p.email, (p as { name?: string | null }).name ?? null)]),
+  );
+}
+
+/** Nome de quem comprou/agendou: membro atual, "ex-membro" ou "—" (sem autor). */
+export function buyerLabel(userId: string | null, names: Map<string, string>): string {
+  if (!userId) return "—";
+  return names.get(userId) ?? "ex-membro";
+}
 
 export type PortfolioSummary = {
   cashBalance: number;
@@ -111,6 +129,7 @@ export function buildPositionView(
   p: Position,
   current: LatestQuote | null,
   urls: Map<string, string>,
+  names: Map<string, string> = new Map(),
 ): PositionView {
   const buyPrice = Number(p.buy_price);
   const sellPrice = p.sell_price === null ? null : Number(p.sell_price);
@@ -130,6 +149,7 @@ export function buildPositionView(
     marketValue: p.status === "open" && current ? current.price * p.quantity : null,
     buyScreenshotUrl: p.buy_screenshot_path ? (urls.get(p.buy_screenshot_path) ?? null) : null,
     sellScreenshotUrl: p.sell_screenshot_path ? (urls.get(p.sell_screenshot_path) ?? null) : null,
+    buyerName: buyerLabel(p.created_by, names),
   };
 }
 
@@ -185,7 +205,7 @@ export async function loadPortfolio(
       .range(from, to);
   });
 
-  const [latest, cashBalance, urls] = await Promise.all([
+  const [latest, cashBalance, urls, names] = await Promise.all([
     getLatestQuotes(
       supabase,
       positions.map((p) => p.ticker),
@@ -196,9 +216,10 @@ export async function loadPortfolio(
       positions.flatMap((p) => [p.buy_screenshot_path, p.sell_screenshot_path]),
       opts.signedUrlSeconds ?? 60 * 60,
     ),
+    loadMemberNames(supabase),
   ]);
 
-  const views = positions.map((p) => buildPositionView(p, latest.get(p.ticker) ?? null, urls));
+  const views = positions.map((p) => buildPositionView(p, latest.get(p.ticker) ?? null, urls, names));
   return { positions: views, summary: summarize(views, cashBalance) };
 }
 
@@ -249,15 +270,69 @@ export async function getPendingOrderTickers(supabase: Client, excludeOrderId?: 
   return [...new Set((data ?? []).map((r) => r.ticker))];
 }
 
+// ---------------------------------------------------------------------------
+// Vagas: carteira (MAX_TICKERS papéis) e por membro (MAX_PER_USER)
+// ---------------------------------------------------------------------------
+
+/** Máximo de papéis abertos/agendados por membro (trigger da 0005). */
+export const MAX_SLOTS_PER_USER = MAX_PER_USER;
+
+/**
+ * Vagas usadas por um membro: posições abertas que ele comprou + ordens 'pending'
+ * dele (mesma conta do trigger da 0005; 'executing' não conta). Vender libera a vaga.
+ */
+export async function getUserSlotsUsed(
+  supabase: Client,
+  userId: string,
+  opts: { excludePositionId?: string; excludeOrderId?: string } = {},
+): Promise<number> {
+  let pq = supabase.from("positions").select("id").eq("status", "open").eq("created_by", userId);
+  if (opts.excludePositionId) pq = pq.neq("id", opts.excludePositionId);
+  let oq = supabase.from("scheduled_orders").select("id").eq("status", "pending").eq("created_by", userId);
+  if (opts.excludeOrderId) oq = oq.neq("id", opts.excludeOrderId);
+  const [p, o] = await Promise.all([pq, oq]);
+  if (p.error) throw new Error(friendlyDbError(p.error));
+  // Sem a tabela de agendamentos (0002 não aplicada) conta só as posições.
+  return (p.data?.length ?? 0) + (o.error ? 0 : (o.data?.length ?? 0));
+}
+
+export type BuySlots = {
+  /** Papéis do usuário: posições abertas dele + ordens 'pending' dele. */
+  userUsed: number;
+  maxPerUser: number;
+  /** Papéis da carteira: abertos + agendados (pending/executing), distintos. */
+  portfolioUsed: number;
+  maxTickers: number;
+};
+
+/**
+ * Mesma conta de checkTickerSlot/getUserSlotsUsed, a partir de dados já carregados
+ * (para a página mostrar "Seus papéis: X/2" e "Carteira: X/10" sem nova consulta).
+ */
+export function countBuySlots(
+  positions: Pick<Position, "status" | "ticker" | "created_by">[],
+  orders: Pick<ScheduledOrder, "status" | "ticker" | "created_by">[] | null | undefined,
+  userId: string,
+): BuySlots {
+  const open = positions.filter((p) => p.status === "open");
+  const active = (orders ?? []).filter((o) => o.status === "pending" || o.status === "executing");
+  const userUsed =
+    open.filter((p) => p.created_by === userId).length +
+    active.filter((o) => o.status === "pending" && o.created_by === userId).length;
+  const portfolioUsed = new Set([...open.map((p) => p.ticker), ...active.map((o) => o.ticker)]).size;
+  return { userUsed, maxPerUser: MAX_PER_USER, portfolioUsed, maxTickers: MAX_TICKERS };
+}
+
 /**
  * Regra da carteira: até MAX_TICKERS papéis, cada um com uma única posição aberta de
  * SHARES_PER_TICKER ações. Agendamentos pendentes reservam a vaga do papel.
+ * Com `userId`, também aplica o limite de MAX_PER_USER papéis por membro.
  * Devolve a mensagem de erro, ou null se o papel pode entrar.
  */
 export async function checkTickerSlot(
   supabase: Client,
   ticker: string,
-  opts: { excludePositionId?: string; excludeOrderId?: string } = {},
+  opts: { excludePositionId?: string; excludeOrderId?: string; userId?: string } = {},
 ): Promise<string | null> {
   const [open, pending] = await Promise.all([
     getOpenTickers(supabase, opts.excludePositionId),
@@ -268,6 +343,10 @@ export async function checkTickerSlot(
   }
   if (pending.includes(ticker)) {
     return `${ticker} já tem uma compra agendada. Cancele o agendamento antes de comprar de novo.`;
+  }
+  if (opts.userId) {
+    const mine = await getUserSlotsUsed(supabase, opts.userId, opts);
+    if (mine >= MAX_PER_USER) return USER_LIMIT_MESSAGE;
   }
   const used = new Set([...open, ...pending]).size;
   if (used >= MAX_TICKERS) {

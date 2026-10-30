@@ -16,14 +16,33 @@ const STATUS: Record<ScheduledOrder["status"], { label: string; cls: string }> =
   failed: { label: "Falhou", cls: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300" },
 };
 
+/**
+ * Nome de quem agendou (displayName do membro, vindo de memberNames), "ex-membro"
+ * se saiu da carteira ou "—" sem autor / sem a lista de nomes.
+ */
+function ownerLabel(createdBy: string | null, memberNames: Record<string, string> | undefined): string {
+  if (!createdBy || !memberNames) return "—";
+  return memberNames[createdBy] ?? "ex-membro";
+}
+
+/**
+ * Lista de compras agendadas. Qualquer membro vê todas e pode pedir "Verificar agora";
+ * cancelar só aparece para o dono da ordem ou para o admin (o servidor confere de novo).
+ */
 export function ScheduledOrders({
   orders,
   isAdmin,
   marketOpen,
+  currentUserId,
+  memberNames,
 }: {
   orders: ScheduledOrder[];
   isAdmin: boolean;
   marketOpen: boolean;
+  /** Usuário logado: pode cancelar as próprias ordens pendentes. */
+  currentUserId?: string;
+  /** id → nome de exibição dos membros atuais. */
+  memberNames?: Record<string, string>;
 }) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [pending, start] = useTransition();
@@ -31,6 +50,9 @@ export function ScheduledOrders({
 
   const active = orders.filter((o) => o.status === "pending" || o.status === "executing");
   const rows = showAll ? orders : active;
+  const canCancel = (o: ScheduledOrder) =>
+    o.status === "pending" && (isAdmin || (currentUserId !== undefined && o.created_by === currentUserId));
+  const showActions = orders.some((o) => isAdmin || (currentUserId !== undefined && o.created_by === currentUserId));
 
   function checkNow() {
     setFeedback(null);
@@ -69,7 +91,7 @@ export function ScheduledOrders({
           <button type="button" className="btn-secondary btn-xs" onClick={() => setShowAll((v) => !v)}>
             {showAll ? "Só pendentes" : `Histórico (${orders.length})`}
           </button>
-          {isAdmin && active.length ? (
+          {active.length ? (
             <button
               type="button"
               className="btn-primary btn-xs"
@@ -91,17 +113,18 @@ export function ScheduledOrders({
         <p className="px-4 py-6 text-center text-sm text-zinc-500">Nenhum agendamento pendente.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[820px] text-sm">
+          <table className="w-full min-w-[920px] text-sm">
             <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900/60">
               <tr>
                 <th className="px-3 py-2">Papel</th>
+                <th className="px-3 py-2">Agendada por</th>
                 <th className="px-3 py-2 text-right">Qtd.</th>
                 <th className="px-3 py-2 text-right">Preço desejado</th>
                 <th className="px-3 py-2">Validade</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Última verificação</th>
                 <th className="px-3 py-2">Agendada em</th>
-                {isAdmin ? <th className="px-3 py-2 text-right">Ações</th> : null}
+                {showActions ? <th className="px-3 py-2 text-right">Ações</th> : null}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -111,6 +134,12 @@ export function ScheduledOrders({
                     <Link href={`/papel/${o.ticker}`} className="hover:underline">
                       {o.ticker}
                     </Link>
+                  </td>
+                  <td className="px-3 py-2">
+                    {ownerLabel(o.created_by, memberNames)}
+                    {currentUserId && o.created_by === currentUserId ? (
+                      <span className="ml-1 text-xs text-zinc-500">(você)</span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatInt(o.quantity)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
@@ -135,9 +164,9 @@ export function ScheduledOrders({
                     )}
                   </td>
                   <td className="px-3 py-2 tabular-nums text-xs text-zinc-500">{formatDateTime(o.created_at)}</td>
-                  {isAdmin ? (
+                  {showActions ? (
                     <td className="px-3 py-2 text-right">
-                      {o.status === "pending" ? (
+                      {canCancel(o) ? (
                         <button
                           type="button"
                           className="btn-secondary btn-xs text-red-600"

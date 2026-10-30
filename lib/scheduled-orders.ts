@@ -22,7 +22,9 @@ export type OrdersRun = {
 /**
  * Executa as compras agendadas cujo preço-limite foi atingido.
  * Só roda no horário do pregão e só com cotação de HOJE (evita feriados).
- * Usa service role: quem chama precisa ter validado admin ou CRON_SECRET.
+ * Usa service role: quem chama precisa ter validado membro ou CRON_SECRET.
+ * A posição criada herda created_by da ordem (o limite de 2 por usuário vale
+ * para quem agendou, não para quem clicou em "Verificar agora").
  */
 export async function executeDueOrders(): Promise<OrdersRun> {
   const market = marketStatus();
@@ -117,7 +119,7 @@ export async function executeDueOrders(): Promise<OrdersRun> {
         quantity: SHARES_PER_TICKER, // regra: sempre 100 ações por papel
         buy_date: today,
         buy_price: q.price,
-        created_by: order.created_by,
+        created_by: order.created_by, // herda o dono da ordem (nunca quem disparou a execução)
       })
       .select("id")
       .single();

@@ -3,12 +3,10 @@
 import { useState, useTransition } from "react";
 import { scheduleOrder } from "@/app/actions/orders";
 import { buyPosition, lookupQuote, type QuoteLookup } from "@/app/actions/positions";
+import { MAX_PER_USER, SHARES_PER_TICKER, USER_LIMIT_MESSAGE } from "@/lib/errors";
 import { formatBRL, formatDate, formatPct, parseDecimal, signClass } from "@/lib/format";
 import { FeedbackBox, type Feedback } from "./modal";
 import { TickerCombobox } from "./ticker-combobox";
-
-/** Regra da carteira: cada papel é comprado com exatamente 100 ações. */
-const SHARES_PER_TICKER = 100;
 
 type Mode = "buy" | "schedule";
 
@@ -16,6 +14,9 @@ type Mode = "buy" | "schedule";
  * Compra: escolhe o papel na lista → aparece a cotação atual e as 100 ações →
  * "Comprar" registra pela cotação do momento e tira o print do Fundamentus.
  * Fora do pregão: agenda com o preço desejado.
+ * Qualquer membro usa; a compra/agendamento é sempre em nome do usuário logado.
+ * Limites: carteira com maxTickers papéis e cada membro com maxPerUser
+ * (posições abertas + agendamentos pendentes dele). O servidor valida de novo.
  */
 export function BuyForm({
   slotsAvailable,
@@ -25,6 +26,8 @@ export function BuyForm({
   today,
   marketOpen,
   marketLabel,
+  userSlotsUsed = 0,
+  maxPerUser = MAX_PER_USER,
 }: {
   /** Vagas de papel livres: MAX_TICKERS − abertos − agendados */
   slotsAvailable: number;
@@ -35,6 +38,9 @@ export function BuyForm({
   today: string;
   marketOpen: boolean;
   marketLabel: string;
+  /** Papéis do usuário logado: posições abertas dele + agendamentos pendentes dele. */
+  userSlotsUsed?: number;
+  maxPerUser?: number;
 }) {
   const [mode, setMode] = useState<Mode>(marketOpen ? "buy" : "schedule");
   const [ticker, setTicker] = useState("");
@@ -47,8 +53,14 @@ export function BuyForm({
   const [saving, startSave] = useTransition();
 
   const isBuy = marketOpen && mode === "buy";
-  const full = slotsAvailable <= 0;
   const used = maxTickers - Math.max(0, slotsAvailable);
+  const portfolioFull = slotsAvailable <= 0;
+  const userFull = userSlotsUsed >= maxPerUser;
+  const blockedReason = userFull
+    ? USER_LIMIT_MESSAGE
+    : portfolioFull
+      ? `A carteira já tem ${maxTickers} papéis (abertos + agendados). Espere uma venda ou o cancelamento de um agendamento para escolher outro.`
+      : null;
 
   const unitPrice = isBuy ? (quote?.price ?? null) : parseDecimal(limitPrice);
   const total = unitPrice !== null && Number.isFinite(unitPrice) ? unitPrice * SHARES_PER_TICKER : null;
@@ -110,16 +122,22 @@ export function BuyForm({
             type="button"
             className={tab(isBuy)}
             onClick={() => setMode("buy")}
-            disabled={!marketOpen || saving}
+            disabled={!marketOpen || saving || Boolean(blockedReason)}
           >
             Comprar agora
           </button>
-          <button type="button" className={tab(!isBuy)} onClick={() => setMode("schedule")} disabled={saving}>
+          <button type="button" className={tab(!isBuy)} onClick={() => setMode("schedule")} disabled={saving || Boolean(blockedReason)}>
             Agendar compra
           </button>
         </div>
-        <div className="text-xs text-zinc-500">
-          Papéis: <strong>{used}</strong>/{maxTickers} (abertos + agendados) · cada compra = {SHARES_PER_TICKER} ações
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-500">
+          <span className={userFull ? "text-amber-700 dark:text-amber-400" : undefined}>
+            Seus papéis: <strong>{Math.min(userSlotsUsed, maxPerUser)}</strong>/{maxPerUser}
+          </span>
+          <span className={portfolioFull ? "text-amber-700 dark:text-amber-400" : undefined}>
+            Carteira: <strong>{used}</strong>/{maxTickers}
+          </span>
+          <span>cada compra = {SHARES_PER_TICKER} ações</span>
         </div>
       </div>
 
@@ -133,13 +151,8 @@ export function BuyForm({
         </span>
       </p>
 
-      {full ? (
-        <FeedbackBox
-          feedback={{
-            kind: "warning",
-            text: `A carteira já tem ${maxTickers} papéis (abertos + agendados). Feche uma posição ou cancele um agendamento para escolher outro.`,
-          }}
-        />
+      {blockedReason ? (
+        <FeedbackBox feedback={{ kind: "warning", text: blockedReason }} />
       ) : (
         <>
           <div>

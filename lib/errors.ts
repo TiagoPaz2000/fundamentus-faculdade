@@ -5,6 +5,9 @@ type DbError = { code?: string; message?: string; details?: string | null } | nu
 /** Regra da carteira: até 10 papéis, cada um comprado com exatamente 100 ações. */
 export const MAX_TICKERS = 10;
 export const SHARES_PER_TICKER = 100;
+/** Cada membro pode ter no máximo 2 papéis abertos ou agendados (0005). Vender libera a vaga. */
+export const MAX_PER_USER = 2;
+export const USER_LIMIT_MESSAGE = `Você já tem ${MAX_PER_USER} papéis abertos ou agendados. Venda um para liberar a vaga.`;
 
 export function friendlyDbError(error: DbError | Error): string {
   if (!error) return "Erro desconhecido.";
@@ -15,13 +18,14 @@ export function friendlyDbError(error: DbError | Error): string {
   if (m) return `${m[1]} já está na carteira (posição aberta). Cada papel entra uma vez, com ${SHARES_PER_TICKER} ações.`;
   m = message.match(/Regra da carteira: já existem ([0-9]+) papéis abertos/);
   if (m) return `A carteira já tem ${m[1]} papéis abertos (máximo ${MAX_TICKERS}). Feche uma posição antes de comprar outro papel.`;
+  if (/Regra da carteira: cada usuário pode ter no máximo/.test(message)) return USER_LIMIT_MESSAGE;
   if (/Regra da carteira: cada papel/.test(message)) return `Cada compra é de exatamente ${SHARES_PER_TICKER} ações.`;
   if (/Limite da carteira/i.test(message)) {
     // trigger antigo da 0001 (limite de 100 ações no total): falta rodar a 0003
     return "O banco ainda usa o limite antigo de 100 ações no total. Rode supabase/migrations/0003_ten_tickers.sql.";
   }
   if (code === "42501" || /row-level security/i.test(message)) {
-    return "Você não tem permissão para essa operação (apenas administradores).";
+    return "Você não tem permissão para essa operação.";
   }
   if (code === "23514") {
     if (/último admin/i.test(message)) return "Não é possível remover o último admin.";

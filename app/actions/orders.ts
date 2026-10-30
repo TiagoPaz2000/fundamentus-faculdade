@@ -2,7 +2,7 @@
 
 import { refresh } from "next/cache";
 import { fail, type ActionResult } from "@/lib/action-result";
-import { AuthError, requireAdmin } from "@/lib/auth";
+import { AuthError, requireUser } from "@/lib/auth";
 import { MAX_QUOTE_AGE_DAYS, daysBetween, isIsoDate, todaySP } from "@/lib/dates";
 import { SHARES_PER_TICKER, errorMessage, friendlyDbError } from "@/lib/errors";
 import { formatBRL, formatDate } from "@/lib/format";
@@ -10,6 +10,7 @@ import { marketStatus } from "@/lib/market-hours";
 import { checkTickerSlot } from "@/lib/portfolio";
 import { fetchCurrentQuote, normalizeTicker } from "@/lib/quotes";
 import { executeDueOrders, type OrderRunResult } from "@/lib/scheduled-orders";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
 function guard(err: unknown): { ok: false; error: string } {
@@ -27,9 +28,10 @@ export type ScheduleInput = {
   validUntil?: string | null;
 };
 
+/** Qualquer membro agenda, sempre em nome próprio (created_by = usuário logado). */
 export async function scheduleOrder(input: ScheduleInput): Promise<ActionResult> {
   try {
-    const user = await requireAdmin();
+    const user = await requireUser();
     const ticker = normalizeTicker(input?.ticker);
     if (!ticker) return fail("Ticker inválido (use, por exemplo, PETR4).");
     if (!Number.isFinite(input.limitPrice) || input.limitPrice <= 0 || input.limitPrice >= 1e9)
@@ -39,7 +41,8 @@ export async function scheduleOrder(input: ScheduleInput): Promise<ActionResult>
       return fail("A validade precisa ser hoje ou uma data futura.");
 
     const supabase = await createClient();
-    const slotError = await checkTickerSlot(supabase, ticker);
+    // Carteira (10 papéis, um por vez) + limite do membro (2 abertos/agendados).
+    const slotError = await checkTickerSlot(supabase, ticker, { userId: user.id });
     if (slotError) return fail(slotError);
 
     // Não deixa agendar papel sem negociação (ocuparia uma vaga para sempre).
@@ -83,17 +86,29 @@ export async function scheduleOrder(input: ScheduleInput): Promise<ActionResult>
   }
 }
 
+/** Admin cancela qualquer ordem pendente; membro, só as próprias. */
 export async function cancelOrder(id: string): Promise<ActionResult> {
   try {
-    await requireAdmin();
+    const user = await requireUser();
     if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) return fail("Agendamento inválido.");
     const supabase = await createClient();
-    const { data, error } = await supabase
+    const { data: order, error: getErr } = await supabase
       .from("scheduled_orders")
-      .update({ status: "cancelled" })
+      .select("id, status, created_by")
       .eq("id", id)
-      .eq("status", "pending")
-      .select("id");
+      .maybeSingle();
+    if (getErr) return fail(friendlyDbError(getErr));
+    if (!order) return fail("Agendamento não encontrado.");
+    if (!user.isAdmin && order.created_by !== user.id) {
+      return fail("Você só pode cancelar os seus próprios agendamentos.");
+    }
+    if (order.status !== "pending") return fail("Só é possível cancelar agendamentos pendentes.");
+
+    // Service role (o RLS só deixa admin alterar ordens); dono já validado acima
+    // e reforçado no próprio UPDATE. Só muda o status para 'cancelled'.
+    let q = createAdminClient().from("scheduled_orders").update({ status: "cancelled" }).eq("id", id).eq("status", "pending");
+    if (!user.isAdmin) q = q.eq("created_by", user.id);
+    const { data, error } = await q.select("id");
     if (error) return fail(friendlyDbError(error));
     if (!data?.length) return fail("Só é possível cancelar agendamentos pendentes.");
     refresh();
@@ -106,7 +121,9 @@ export async function cancelOrder(id: string): Promise<ActionResult> {
 /** Verifica agora as compras agendadas (só no horário do pregão). */
 export async function runOrdersNow(): Promise<ActionResult<OrderRunResult[]>> {
   try {
-    await requireAdmin(); // valida admin ANTES de usar service role
+    // Qualquer membro pode pedir a verificação. Valida ANTES de usar service role;
+    // cada posição criada herda created_by da ordem (ver executeDueOrders).
+    await requireUser();
     const run = await executeDueOrders();
     if (!run.ran) return fail(run.reason ?? "Pregão fechado.");
     refresh();

@@ -3,11 +3,14 @@
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { formatBRL, formatDate, formatInt, formatPct, signClass } from "@/lib/format";
+import { memberLabel } from "@/lib/member-names";
 import type { PositionView } from "@/lib/portfolio";
 import { ClosePositionButton, ManagePositionButton } from "./position-actions";
 import { ScreenshotLink } from "./screenshot-link";
 
 type Filter = "open" | "closed" | "all";
+type Owner = "mine" | "all";
+
 
 export function PositionsTable({
   positions,
@@ -15,28 +18,47 @@ export function PositionsTable({
   today,
   showFilter = true,
   initialFilter = "open",
+  currentUserId,
+  memberNames,
 }: {
   positions: PositionView[];
   isAdmin: boolean;
   today: string;
   showFilter?: boolean;
   initialFilter?: Filter;
+  /** Usuário logado (filtro "Meus papéis"). */
+  currentUserId: string;
+  /** id → nome dos membros atuais (para "vendido por"). */
+  memberNames: Record<string, string>;
 }) {
   const router = useRouter();
   const [filter, setFilter] = useState<Filter>(initialFilter);
+  const [owner, setOwner] = useState<Owner>("all");
 
+  const ownerCounts = useMemo(
+    () => ({ mine: positions.filter((p) => p.created_by === currentUserId).length, all: positions.length }),
+    [positions, currentUserId],
+  );
+  const owned = useMemo(
+    () => (owner === "all" ? positions : positions.filter((p) => p.created_by === currentUserId)),
+    [positions, owner, currentUserId],
+  );
   const counts = useMemo(
     () => ({
-      open: positions.filter((p) => p.status === "open").length,
-      closed: positions.filter((p) => p.status === "closed").length,
-      all: positions.length,
+      open: owned.filter((p) => p.status === "open").length,
+      closed: owned.filter((p) => p.status === "closed").length,
+      all: owned.length,
     }),
-    [positions],
+    [owned],
   );
   const rows = useMemo(
-    () => (filter === "all" ? positions : positions.filter((p) => p.status === filter)),
-    [positions, filter],
+    () => (filter === "all" ? owned : owned.filter((p) => p.status === filter)),
+    [owned, filter],
   );
+  const owners: { key: Owner; label: string }[] = [
+    { key: "mine", label: "Meus papéis" },
+    { key: "all", label: "Todos" },
+  ];
 
   const filters: { key: Filter; label: string }[] = [
     { key: "open", label: "Abertas" },
@@ -48,23 +70,9 @@ export function PositionsTable({
     <div className="card overflow-hidden">
       {showFilter ? (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <div className="inline-flex rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700" role="tablist">
-            {filters.map((f) => (
-              <button
-                key={f.key}
-                type="button"
-                role="tab"
-                aria-selected={filter === f.key}
-                onClick={() => setFilter(f.key)}
-                className={`rounded px-3 py-1 text-sm ${
-                  filter === f.key
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                    : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                }`}
-              >
-                {f.label} <span className="opacity-60">({counts[f.key]})</span>
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <Segmented label="Dono das posições" options={owners} value={owner} counts={ownerCounts} onChange={setOwner} />
+            <Segmented label="Status das posições" options={filters} value={filter} counts={counts} onChange={setFilter} />
           </div>
           <span className="text-xs text-zinc-500">Clique numa linha para ver o gráfico do papel.</span>
         </div>
@@ -74,7 +82,9 @@ export function PositionsTable({
         <div className="px-4 py-12 text-center text-sm text-zinc-500">
           {positions.length === 0
             ? "Nenhuma posição ainda." + (isAdmin ? " Use o formulário acima para registrar a primeira compra." : "")
-            : "Nenhuma posição neste filtro."}
+            : owner === "mine" && ownerCounts.mine === 0
+              ? "Você ainda não comprou nenhum papel."
+              : "Nenhuma posição neste filtro."}
         </div>
       ) : (
         <>
@@ -90,6 +100,9 @@ export function PositionsTable({
                   </div>
                   <div className="text-xs text-zinc-500">
                     {formatInt(p.quantity)} × {formatBRL(p.buy_price)} em {formatDate(p.buy_date)}
+                  </div>
+                  <div className="text-xs text-zinc-500">
+                    <Who position={p} currentUserId={currentUserId} memberNames={memberNames} />
                   </div>
                 </div>
                 <div className="text-right">
@@ -133,10 +146,11 @@ export function PositionsTable({
 
         {/* Tela grande: tabela */}
         <div className="hidden overflow-x-auto md:block">
-          <table className="w-full min-w-[1100px] text-sm">
+          <table className="w-full min-w-[1200px] text-sm">
             <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-900/60">
               <tr>
                 <th className="px-3 py-2">Papel</th>
+                <th className="px-3 py-2">Comprado por</th>
                 <th className="px-3 py-2 text-right">Qtd.</th>
                 <th className="px-3 py-2">Compra</th>
                 <th className="px-3 py-2 text-right">Valor compra</th>
@@ -158,6 +172,15 @@ export function PositionsTable({
                     className="cursor-pointer align-top hover:bg-zinc-50 dark:hover:bg-zinc-800/40"
                   >
                     <td className="px-3 py-2.5 font-semibold">{p.ticker}</td>
+                    <td className="px-3 py-2.5">
+                      <div className={p.created_by === currentUserId ? "font-medium" : ""}>
+                        {memberLabel(p.created_by, memberNames)}
+                        {p.created_by === currentUserId ? <span className="text-xs text-zinc-500"> (você)</span> : null}
+                      </div>
+                      {p.status === "closed" ? (
+                        <div className="text-xs text-zinc-500">vendido por {memberLabel(p.closed_by, memberNames)}</div>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{formatInt(p.quantity)}</td>
                     <td className="px-3 py-2.5 tabular-nums">{formatDate(p.buy_date)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">
@@ -234,6 +257,67 @@ export function PositionsTable({
         </div>
         </>
       )}
+    </div>
+  );
+}
+
+function Who({
+  position: p,
+  currentUserId,
+  memberNames,
+}: {
+  position: PositionView;
+  currentUserId: string;
+  memberNames: Record<string, string>;
+}) {
+  return (
+    <>
+      comprado por{" "}
+      <span className="font-medium text-zinc-700 dark:text-zinc-300">
+        {memberLabel(p.created_by, memberNames)}
+        {p.created_by === currentUserId ? " (você)" : ""}
+      </span>
+      {p.status === "closed" ? (
+        <>
+          {" · "}vendido por{" "}
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">{memberLabel(p.closed_by, memberNames)}</span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function Segmented<K extends string>({
+  label,
+  options,
+  value,
+  counts,
+  onChange,
+}: {
+  label: string;
+  options: { key: K; label: string }[];
+  value: K;
+  counts: Record<K, number>;
+  onChange: (key: K) => void;
+}) {
+  return (
+    <div className="inline-flex rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700" role="tablist" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          role="tab"
+          aria-selected={value === o.key}
+          onClick={() => onChange(o.key)}
+          className={`rounded px-3 py-1 text-sm ${
+            value === o.key
+              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+              : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          }`}
+        >
+          {o.label} <span className="opacity-60">({counts[o.key]})</span>
+        </button>
+      ))}
     </div>
   );
 }

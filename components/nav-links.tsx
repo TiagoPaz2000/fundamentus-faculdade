@@ -8,7 +8,7 @@ export function NavLinks({ isAdmin }: { isAdmin: boolean }) {
   const links = [
     { href: "/", label: "Carteira" },
     { href: "/caixa", label: "Caixa" },
-    ...(isAdmin ? [{ href: "/usuarios", label: "Usuários" }] : []),
+    ...(isAdmin ? [{ href: "/usuarios", label: "Membros" }] : []),
   ];
   return (
     <nav className="flex items-center gap-1 overflow-x-auto">

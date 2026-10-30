@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
   void request.headers.get("cookie");
   const user = await getCurrentUserOrNull().catch(() => null);
   if (!user) return Response.json({ error: "Não autenticado" }, { status: 401 });
+  if (!user.isMember) return Response.json({ error: "Sem acesso à carteira" }, { status: 403 });
 
   try {
     const tickers = await getTickerList();
