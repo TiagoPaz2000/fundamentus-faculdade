@@ -143,21 +143,31 @@ alter table public.positions enable row level security;
 alter table public.cash_movements enable row level security;
 alter table public.quotes enable row level security;
 
+drop policy if exists "profiles read" on public.profiles;
 create policy "profiles read" on public.profiles for select to authenticated using (true);
+drop policy if exists "profiles admin update" on public.profiles;
 create policy "profiles admin update" on public.profiles for update to authenticated
   using (public.is_admin()) with check (public.is_admin());
 
+drop policy if exists "positions read" on public.positions;
 create policy "positions read" on public.positions for select to authenticated using (true);
+drop policy if exists "positions admin insert" on public.positions;
 create policy "positions admin insert" on public.positions for insert to authenticated with check (public.is_admin());
+drop policy if exists "positions admin update" on public.positions;
 create policy "positions admin update" on public.positions for update to authenticated using (public.is_admin()) with check (public.is_admin());
+drop policy if exists "positions admin delete" on public.positions;
 create policy "positions admin delete" on public.positions for delete to authenticated using (public.is_admin());
 
+drop policy if exists "cash read" on public.cash_movements;
 create policy "cash read" on public.cash_movements for select to authenticated using (true);
+drop policy if exists "cash admin insert" on public.cash_movements;
 create policy "cash admin insert" on public.cash_movements for insert to authenticated
   with check (public.is_admin() and kind in ('deposit','withdraw','adjust'));
+drop policy if exists "cash admin delete" on public.cash_movements;
 create policy "cash admin delete" on public.cash_movements for delete to authenticated
   using (public.is_admin() and kind in ('deposit','withdraw','adjust'));
 
+drop policy if exists "quotes read" on public.quotes;
 create policy "quotes read" on public.quotes for select to authenticated using (true);
 -- escrita em quotes: apenas service role (cron / backfill)
 
@@ -165,6 +175,24 @@ create policy "quotes read" on public.quotes for select to authenticated using (
 insert into storage.buckets (id, name, public) values ('screenshots','screenshots', false)
 on conflict (id) do nothing;
 
+drop policy if exists "screenshots read" on storage.objects;
 create policy "screenshots read" on storage.objects for select to authenticated
   using (bucket_id = 'screenshots');
 -- upload dos prints é feito no servidor com service role
+
+-- ---------- Trava: sempre existe pelo menos um admin ----------
+create or replace function public.keep_one_admin() returns trigger
+language plpgsql as $$
+begin
+  if old.is_admin and not new.is_admin then
+    perform pg_advisory_xact_lock(hashtext('keep_one_admin'));
+    if not exists (select 1 from public.profiles where is_admin and id <> old.id) then
+      raise exception 'Não é possível remover o último admin' using errcode = 'check_violation';
+    end if;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists profiles_keep_one_admin on public.profiles;
+create trigger profiles_keep_one_admin before update of is_admin on public.profiles
+  for each row execute function public.keep_one_admin();
