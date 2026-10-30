@@ -42,3 +42,4 @@ next-env.d.ts
 
 # prints de teste (scripts/test-screenshot.ts)
 /tmp
+!.env.example
