@@ -37,7 +37,7 @@ insert into public.profiles (id, email, is_admin)
 select id, email, true from auth.users where lower(email) = 'tiagopaz.dev@gmail.com'
 on conflict (id) do update set is_admin = true;
 
-do $
+do $$
 begin
   if to_regprocedure('public.is_member()') is null then
     if not exists (select 1 from public.profiles where is_admin) then
@@ -45,7 +45,7 @@ begin
     end if;
     delete from public.profiles where not is_admin;
   end if;
-end $;
+end $$;
 
 -- 4) Membro = tem perfil
 create or replace function public.is_member() returns boolean
